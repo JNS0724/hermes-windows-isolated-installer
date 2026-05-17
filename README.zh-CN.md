@@ -62,30 +62,38 @@
 2. 下载源码 zip，也可以直接下载 [v2026.5.7.zip](https://github.com/NousResearch/hermes-agent/archive/refs/tags/v2026.5.7.zip)。
 3. 可以保留 zip 原样，也可以先解压到本地目录。
 
-然后创建或选择一个安装目录，从这个目录里运行安装脚本：
+然后创建或选择一个安装目录，从这个目录里运行安装脚本。推荐最终用户使用 CMD 包装入口，只需要传 Hermes Agent 源码 zip：
 
-```powershell
+```cmd
 mkdir D:\tools\hermes
 cd D:\tools\hermes
 
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
-  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 ```
 
-如果已经解压了 zip，传解压后的源码目录：
+其他配置默认处理：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
-  -SourcePath C:\downloads\hermes-agent-2026.5.7
+- 安装根目录默认是当前 `cd` 进入的目录
+- Python 版本默认使用 `3.11`
+- `uv` 默认从 `PATH` 或本安装目录下的 `runtime\uv\uv.exe` 查找
+- pip 镜像默认读取本机 pip 配置，不写入全局环境
+- 默认不 clone `hermes-agent.git`
+- 默认不安装 Node 依赖
+- 默认不写 User/Machine `PATH` 或 `HERMES_HOME`
+
+如果已经解压了 zip，可以改传解压后的源码目录：
+
+```cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
-如果完整 clone `hermes-agent.git` 很慢，可以继续让 Hermes 主源码走 zip，只在源码里存在 `.gitmodules` 且确实需要子模块文件时，单独 clone 子模块：
+如果完整 clone `hermes-agent.git` 很慢，仍然保持上面的 zip 安装方式。只有源码里存在 `.gitmodules` 且确实需要子模块文件时，才额外 clone 子模块：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
-  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
-  -AllowGitClone `
-  -CloneSourceSubmodules `
+```cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd ^
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip ^
+  -AllowGitClone ^
+  -CloneSourceSubmodules ^
   -UseGitBashForGit
 ```
 

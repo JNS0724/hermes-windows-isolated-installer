@@ -62,30 +62,38 @@ Download Hermes Agent source manually first. This avoids `git clone` failures on
 2. Download the source zip, or use the direct archive URL: [v2026.5.7.zip](https://github.com/NousResearch/hermes-agent/archive/refs/tags/v2026.5.7.zip).
 3. Keep the zip as-is, or extract it to a local folder.
 
-Then create or choose an install folder and run the installer from that folder:
+Then create or choose an install folder and run the installer from that folder. For end users, the recommended command is the CMD wrapper with only the Hermes Agent source zip:
 
-```powershell
+```cmd
 mkdir D:\tools\hermes
 cd D:\tools\hermes
 
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
-  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 ```
+
+Everything else has a default:
+
+- The install root is the current directory you `cd` into.
+- Python defaults to `3.11`.
+- `uv` is found from `PATH` or `runtime\uv\uv.exe` under the install root.
+- pip mirrors are read from local pip config when available, without writing global environment.
+- `hermes-agent.git` is not cloned by default.
+- Node dependencies are not installed by default.
+- User/Machine `PATH` and `HERMES_HOME` are not changed.
 
 If you already extracted the zip, pass the extracted source folder instead:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
-  -SourcePath C:\downloads\hermes-agent-2026.5.7
+```cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
-If cloning the full `hermes-agent.git` repository is slow, keep the main Hermes source as a zip and clone only source submodules when the zip contains `.gitmodules`:
+If cloning the full `hermes-agent.git` repository is slow, keep the zip workflow above. Only add source submodule cloning when the zip contains `.gitmodules` and those files are required:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
-  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
-  -AllowGitClone `
-  -CloneSourceSubmodules `
+```cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd ^
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip ^
+  -AllowGitClone ^
+  -CloneSourceSubmodules ^
   -UseGitBashForGit
 ```
 
