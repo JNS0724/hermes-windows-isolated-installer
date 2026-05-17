@@ -48,7 +48,7 @@ Required:
 Optional:
 
 - Git for Windows, only if you explicitly pass `-AllowGitClone` for fallback `git clone` mode
-- Git Bash for Hermes terminal features
+- Git Bash for Hermes terminal features, and for `-UseGitBashForGit` when PowerShell git cannot clone but Git Bash can
 - Internal PyPI mirror
 - Internal Python standalone mirror for uv
 - Internal npm registry
@@ -142,6 +142,7 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | `-SourcePath` | Empty | Local Hermes Agent source directory, or a parent folder containing the extracted source directory. Preferred when `git clone` is blocked. |
 | `-SourceZip` | Empty | Local Hermes Agent source zip. The installer extracts it under `runtime\source-extract` and copies the source into `app\hermes-agent`. |
 | `-AllowGitClone` | Off | Explicitly allow fallback `git clone`. Off by default; manual source zip is recommended. |
+| `-UseGitBashForGit` | Off | Run fallback git operations through Git Bash. Use this when manual `git clone` works in Git Bash but fails from PowerShell. |
 | `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Fallback git repository URL, used only with `-AllowGitClone` when neither `-SourcePath` nor `-SourceZip` is provided. |
 | `-Branch` | `v2026.5.7` | Fallback branch or tag. `v2026.5.7` corresponds to the v0.13.0-era Windows Native release. |
 | `-PythonVersion` | `3.11` | Python version for the local uv-managed venv. |
@@ -220,6 +221,16 @@ The installer is safe to run again after a failed install. In local source mode,
 
 If you do not pass `-SourcePath` or `-SourceZip`, the installer stops with a manual-source error. It falls back to git mode only when you explicitly pass `-AllowGitClone`. In that mode, a valid git checkout is updated with `fetch`, `checkout`, and submodule sync.
 
+When users can clone successfully from Git Bash but the installer fails during PowerShell git calls, rerun with Git Bash git mode:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 `
+  -AllowGitClone `
+  -UseGitBashForGit
+```
+
+This runs `git clone`, `fetch`, `checkout`, `pull`, and `submodule update` through Git Bash without writing global Git config.
+
 ## Validate The Installer
 
 Run a dry run:
@@ -278,7 +289,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## Notes
 
-- Git is optional. This project does not install Git globally. The installer does not run `git clone` by default; pass `-AllowGitClone` to opt into git fallback. Use `-SourcePath` or `-SourceZip` when `git clone` is blocked.
+- Git is optional. This project does not install Git globally. The installer does not run `git clone` by default; pass `-AllowGitClone` to opt into git fallback. If PowerShell git is blocked but Git Bash works, add `-UseGitBashForGit`; use `-SourcePath` or `-SourceZip` when `git clone` is fully blocked.
 - Git Bash is still recommended for Hermes terminal features. If it is installed in a standard location, the launcher detects it automatically.
 - In fallback git mode, the installer sets Git's `windows.appendAtomically=false` via process-local environment variables to avoid Windows lock-file issues without running `git config --global`.
 - Node is intentionally opt-in. Pass `-InstallNodeDeps` and `-NodeZip` when you need Node-based features.

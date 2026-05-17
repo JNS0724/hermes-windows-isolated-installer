@@ -48,7 +48,7 @@
 可选：
 
 - Git for Windows，仅当你显式传 `-AllowGitClone` 走兜底 `git clone` 模式时需要
-- Git Bash，Hermes terminal 功能建议安装
+- Git Bash，Hermes terminal 功能建议安装；当 PowerShell 里 git clone 失败但 Git Bash 可以 clone 时，也用于 `-UseGitBashForGit`
 - 企业内网 PyPI 镜像
 - uv Python standalone 内网镜像
 - 企业内网 npm registry
@@ -142,6 +142,7 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | `-SourcePath` | 空 | 本地 Hermes Agent 源码目录，也可以是包含解压后源码目录的上级目录。`git clone` 被拦截时推荐使用。 |
 | `-SourceZip` | 空 | 本地 Hermes Agent 源码 zip。安装器会解压到 `runtime\source-extract`，再把源码复制到 `app\hermes-agent`。 |
 | `-AllowGitClone` | 关闭 | 显式允许安装器使用 git clone 兜底。默认关闭，推荐手动下载源码 zip。 |
+| `-UseGitBashForGit` | 关闭 | 让兜底 git 操作通过 Git Bash 执行。当用户手动在 Git Bash 里 `git clone` 成功、但 PowerShell 里失败时使用。 |
 | `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | 兜底 git 仓库地址。只有传 `-AllowGitClone` 且未传 `-SourcePath` / `-SourceZip` 时才使用。 |
 | `-Branch` | `v2026.5.7` | 兜底 git 分支或 tag。`v2026.5.7` 对应 v0.13.0 附近的 Windows Native 版本。 |
 | `-PythonVersion` | `3.11` | 本地 uv 虚拟环境使用的 Python 版本。 |
@@ -220,6 +221,16 @@ home\logs\launcher-YYYYMMDD.log
 
 如果没有传 `-SourcePath` 或 `-SourceZip`，安装器会直接停止并提示手动下载源码。只有显式传 `-AllowGitClone` 时，才会回退到 git 模式。该模式下已有有效 git checkout 时，会执行 `fetch`、`checkout` 和 submodule 同步。
 
+如果用户手动在 Git Bash 里可以 clone，但安装器在 PowerShell 调 git 时失败，可以改用 Git Bash git 模式重新运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 `
+  -AllowGitClone `
+  -UseGitBashForGit
+```
+
+该模式会通过 Git Bash 执行 `git clone`、`fetch`、`checkout`、`pull` 和 `submodule update`，不会写入全局 Git 配置。
+
 ## 验证安装器
 
 先做 dry run：
@@ -278,7 +289,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## 说明
 
-- Git 是可选项。本项目不会全局安装 Git。默认不执行 `git clone`；只有传 `-AllowGitClone` 才会使用 git 兜底。`git clone` 被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
+- Git 是可选项。本项目不会全局安装 Git。默认不执行 `git clone`；只有传 `-AllowGitClone` 才会使用 git 兜底。PowerShell git 被拦截但 Git Bash 可用时，加 `-UseGitBashForGit`；`git clone` 完全被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
 - Git Bash 仍建议安装，用于 Hermes terminal 功能。安装在常见路径时，启动器会自动探测。
 - 在兜底 git 模式下，安装器会通过进程级环境变量设置 Git 的 `windows.appendAtomically=false`，用于规避 Windows lock 文件问题，但不会运行 `git config --global`。
 - Node 是可选项。只有需要 Node 相关功能时，才传 `-InstallNodeDeps` 和 `-NodeZip`。

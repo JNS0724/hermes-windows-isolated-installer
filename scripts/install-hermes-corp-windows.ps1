@@ -18,6 +18,7 @@ It deliberately does not:
 It does:
 - prepare hermes-agent from a local source directory or source zip
 - optionally clone/update hermes-agent from GitHub only when -AllowGitClone is given
+- optionally run git operations through Git Bash when -UseGitBashForGit is given
 - create a local uv-managed Python 3.11 virtual environment
 - optionally use a local/managed Node runtime for Node-based dependencies
 - create a hermes-corp.ps1 launcher that sets process-local env vars
@@ -44,6 +45,8 @@ Manual source install:
   Or pass the downloaded zip directly:
   -SourceZip C:\path\to\hermes-agent-v2026.5.7.zip
   Git clone fallback is disabled unless -AllowGitClone is passed.
+  If PowerShell git clone fails but manual Git Bash clone works, add:
+  -AllowGitClone -UseGitBashForGit
 
 Diagnostics:
   Installer logs are written to <root>\logs by default.
@@ -73,6 +76,7 @@ param(
     [string]$NodeZip = "",
     [string]$LogDir = "",
     [switch]$AllowGitClone,
+    [switch]$UseGitBashForGit,
     [switch]$InstallNodeDeps,
     [switch]$ForceRecreateVenv,
     [switch]$SkipDependencyInstall,
@@ -963,6 +967,91 @@ function Find-GitBash {
     Write-Warn "Git Bash was not found. Hermes terminal features may need HERMES_GIT_BASH_PATH in the launcher."
 }
 
+function Quote-BashArg {
+    param([AllowNull()][string]$Value)
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+
+    return "'" + $Value.Replace("'", "'\''") + "'"
+}
+
+function ConvertTo-GitBashPath {
+    param([string]$Path)
+
+    $full = Resolve-FullPath $Path
+    if ($full -match '^([A-Za-z]):\\(.*)$') {
+        $drive = $matches[1].ToLowerInvariant()
+        $rest = $matches[2] -replace '\\', '/'
+        if ($rest) {
+            return "/$drive/$rest"
+        }
+        return "/$drive/"
+    }
+
+    return ($full -replace '\\', '/')
+}
+
+function Invoke-GitCommand {
+    param(
+        [string[]]$Arguments,
+        [string]$WorkingDirectory = ""
+    )
+
+    if ($UseGitBashForGit) {
+        if (-not $script:GitBashPath) {
+            throw "Git Bash was not found. Remove -UseGitBashForGit or install Git for Windows with Git Bash."
+        }
+
+        $cwdSource = $WorkingDirectory
+        if (-not $cwdSource.Trim()) {
+            $cwdSource = (Get-Location).ProviderPath
+        }
+
+        $allArgs = New-Object System.Collections.Generic.List[string]
+        $allArgs.Add("-c")
+        $allArgs.Add("windows.appendAtomically=false")
+        foreach ($arg in $Arguments) {
+            $allArgs.Add($arg)
+        }
+
+        $quotedArgs = @($allArgs | ForEach-Object { Quote-BashArg $_ })
+        $bashCwd = ConvertTo-GitBashPath $cwdSource
+        $bashCommand = "cd $(Quote-BashArg $bashCwd) && git $($quotedArgs -join ' ')"
+        Write-LogLine -Level "INFO" -Message "Running git through Git Bash in $bashCwd"
+        & $script:GitBashPath -lc $bashCommand
+        return
+    }
+
+    if (-not $script:GitCmd) {
+        throw "git.exe is required when -AllowGitClone is used without -SourcePath or -SourceZip."
+    }
+
+    & $script:GitCmd -c windows.appendAtomically=false @Arguments
+}
+
+function Ensure-GitForClone {
+    if ($UseGitBashForGit) {
+        if (-not $script:GitBashPath) {
+            Find-GitBash
+        }
+        if (-not $script:GitBashPath) {
+            throw "Git Bash was not found. Install Git for Windows with Git Bash, or rerun without -UseGitBashForGit."
+        }
+
+        $gitVersion = & $script:GitBashPath -lc "git --version"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Git is not available inside Git Bash. Check the Git for Windows installation."
+        }
+        Write-Ok "git via Git Bash: $($gitVersion -join ' ')"
+        return
+    }
+
+    Ensure-Git
+    Find-GitBash
+}
+
 function Move-PartialInstallDirAside {
     $safeInstallDir = Assert-UnderRoot $script:InstallDir "partial InstallDir"
     $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -1125,45 +1214,31 @@ function Update-Repository {
         throw "Local source is required. Download Hermes Agent source zip manually, then pass -SourceZip or -SourcePath. To use git explicitly, rerun with -AllowGitClone."
     }
 
-    if (-not $script:GitCmd) {
-        throw "git.exe is required when -AllowGitClone is used without -SourcePath or -SourceZip."
-    }
-
     $repoValid = $false
     if (Test-Path -LiteralPath (Join-Path $script:InstallDir ".git")) {
-        Push-Location $script:InstallDir
-        try {
-            $inside = & $script:GitCmd -c windows.appendAtomically=false rev-parse --is-inside-work-tree 2>$null
-            if ($LASTEXITCODE -eq 0 -and $inside -match "true") {
-                $repoValid = $true
-            }
-        } finally {
-            Pop-Location
+        $inside = Invoke-GitCommand -Arguments @("rev-parse", "--is-inside-work-tree") -WorkingDirectory $script:InstallDir 2>$null
+        if ($LASTEXITCODE -eq 0 -and $inside -match "true") {
+            $repoValid = $true
         }
     }
 
     if ($repoValid) {
         Write-Info "Updating existing hermes-agent repository..."
-        Push-Location $script:InstallDir
-        try {
-            & $script:GitCmd -c windows.appendAtomically=false remote set-url origin $RepoUrl
-            & $script:GitCmd -c windows.appendAtomically=false fetch --tags origin
-            if ($LASTEXITCODE -ne 0) {
-                throw "git fetch failed"
-            }
-            & $script:GitCmd -c windows.appendAtomically=false checkout $Branch
-            if ($LASTEXITCODE -ne 0) {
-                throw "git checkout $Branch failed"
-            }
-            try {
-                & $script:GitCmd -c windows.appendAtomically=false pull --ff-only origin $Branch
-            } catch {
-                Write-Warn "git pull skipped or failed for tag/detached checkout."
-            }
-            & $script:GitCmd -c windows.appendAtomically=false submodule update --init --recursive
-        } finally {
-            Pop-Location
+        Invoke-GitCommand -Arguments @("remote", "set-url", "origin", $RepoUrl) -WorkingDirectory $script:InstallDir
+        Invoke-GitCommand -Arguments @("fetch", "--tags", "origin") -WorkingDirectory $script:InstallDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "git fetch failed"
         }
+        Invoke-GitCommand -Arguments @("checkout", $Branch) -WorkingDirectory $script:InstallDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "git checkout $Branch failed"
+        }
+        try {
+            Invoke-GitCommand -Arguments @("pull", "--ff-only", "origin", $Branch) -WorkingDirectory $script:InstallDir
+        } catch {
+            Write-Warn "git pull skipped or failed for tag/detached checkout."
+        }
+        Invoke-GitCommand -Arguments @("submodule", "update", "--init", "--recursive") -WorkingDirectory $script:InstallDir
         Write-Ok "Repository ready at $script:InstallDir"
         return
     }
@@ -1178,17 +1253,16 @@ function Update-Repository {
     }
 
     Write-Info "Cloning $RepoUrl ($Branch)..."
-    & $script:GitCmd -c windows.appendAtomically=false clone --branch $Branch --recurse-submodules $RepoUrl $script:InstallDir
+    $cloneTarget = $script:InstallDir
+    if ($UseGitBashForGit) {
+        $cloneTarget = ConvertTo-GitBashPath $script:InstallDir
+    }
+    Invoke-GitCommand -Arguments @("clone", "--branch", $Branch, "--recurse-submodules", $RepoUrl, $cloneTarget) -WorkingDirectory (Split-Path $script:InstallDir -Parent)
     if ($LASTEXITCODE -ne 0) {
         throw "git clone failed"
     }
-    Push-Location $script:InstallDir
-    try {
-        & $script:GitCmd -c windows.appendAtomically=false config windows.appendAtomically false
-        & $script:GitCmd -c windows.appendAtomically=false submodule update --init --recursive
-    } finally {
-        Pop-Location
-    }
+    Invoke-GitCommand -Arguments @("config", "windows.appendAtomically", "false") -WorkingDirectory $script:InstallDir
+    Invoke-GitCommand -Arguments @("submodule", "update", "--init", "--recursive") -WorkingDirectory $script:InstallDir
     Write-Ok "Repository ready at $script:InstallDir"
 }
 
@@ -1661,6 +1735,7 @@ function Main {
         if ($AllowGitClone) {
             Write-Host "Repo:       $RepoUrl"
             Write-Host "Branch/tag: $Branch"
+            Write-Host "Git shell:  $(if ($UseGitBashForGit) { 'Git Bash' } else { 'PowerShell git.exe' })"
         }
     }
     Write-Host "Log:        $script:LogPath"
@@ -1681,7 +1756,7 @@ function Main {
     if ($localSourceMode -or (-not $AllowGitClone)) {
         Invoke-Step "Checking Git Bash for terminal support (optional)" { Find-GitBash }
     } else {
-        Invoke-Step "Checking git" { Ensure-Git; Find-GitBash }
+        Invoke-Step "Checking git" { Ensure-GitForClone }
     }
     Invoke-Step "Preparing hermes-agent source tree" { Update-Repository }
     Invoke-Step "Creating isolated Python virtual environment" { Ensure-Venv }
