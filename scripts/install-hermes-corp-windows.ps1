@@ -640,10 +640,6 @@ mcp_servers: {}
 
 function Write-Launcher {
     $launcherPath = Join-Path $script:BinDir "hermes-corp.ps1"
-    $escapedGitBash = ""
-    if ($script:GitBashPath) {
-        $escapedGitBash = $script:GitBashPath.Replace("'", "''")
-    }
 
     $launcher = @"
 param(
@@ -673,9 +669,47 @@ if (-not (Test-Path -LiteralPath `$HermesExe)) {
 `$env:TERMINAL_CWD = `$Root
 "@
 
-    if ($escapedGitBash) {
-        $launcher += "`r`n`$env:HERMES_GIT_BASH_PATH = '$escapedGitBash'`r`n"
+    $launcher += @'
+
+function Find-HermesGitBash {
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if ($gitCmd) {
+        $gitExeDir = Split-Path $gitCmd.Source -Parent
+        if ($gitExeDir) {
+            $maybeRoot = Split-Path $gitExeDir -Parent
+            if ($maybeRoot) {
+                $candidates.Add((Join-Path $maybeRoot 'bin\bash.exe'))
+                $candidates.Add((Join-Path $maybeRoot 'usr\bin\bash.exe'))
+            }
+        }
     }
+
+    if ($env:ProgramFiles) {
+        $candidates.Add((Join-Path $env:ProgramFiles 'Git\bin\bash.exe'))
+    }
+    $pf86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+    if ($pf86) {
+        $candidates.Add((Join-Path $pf86 'Git\bin\bash.exe'))
+    }
+    if ($env:LocalAppData) {
+        $candidates.Add((Join-Path $env:LocalAppData 'Programs\Git\bin\bash.exe'))
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).ProviderPath
+        }
+    }
+    return $null
+}
+
+$GitBashPath = Find-HermesGitBash
+if ($GitBashPath) {
+    $env:HERMES_GIT_BASH_PATH = $GitBashPath
+}
+'@
 
     $launcher += @"
 
