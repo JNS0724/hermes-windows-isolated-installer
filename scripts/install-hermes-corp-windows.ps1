@@ -31,6 +31,8 @@ Enterprise mirrors:
   -PypiIndexUrl https://pypi.corp/simple
   -NpmRegistry https://npm.corp/repository/npm/
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
+  -HttpsProxy http://proxy.corp.local:8080
+  -NoProxy .corp.local,10.0.0.0/8,localhost,127.0.0.1
 
 Diagnostics:
   Installer logs are written to <root>\logs by default.
@@ -51,6 +53,9 @@ param(
     [string]$PypiIndexUrl = "",
     [string]$NpmRegistry = "",
     [string]$PythonInstallMirror = "",
+    [string]$HttpProxy = "",
+    [string]$HttpsProxy = "",
+    [string]$NoProxy = "",
     [string]$UvExe = "",
     [string]$NodeZip = "",
     [string]$LogDir = "",
@@ -240,7 +245,8 @@ function Write-EnvironmentDiagnostics {
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
         "http_proxy", "https_proxy", "all_proxy", "no_proxy",
         "UV_DEFAULT_INDEX", "PIP_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR",
-        "npm_config_registry", "HERMES_HOME", "UV_CACHE_DIR", "TERMINAL_CWD"
+        "npm_config_registry", "npm_config_proxy", "npm_config_https_proxy",
+        "HERMES_HOME", "UV_CACHE_DIR", "TERMINAL_CWD"
     )) {
         $value = [Environment]::GetEnvironmentVariable($name, "Process")
         if ($name -match "KEY|TOKEN|SECRET|PASSWORD") {
@@ -336,6 +342,26 @@ function Set-ProcessOnlyEnvironment {
 
     if ($NpmRegistry.Trim()) {
         $env:npm_config_registry = $NpmRegistry.Trim()
+    }
+
+    if ($HttpProxy.Trim()) {
+        $proxy = $HttpProxy.Trim()
+        $env:HTTP_PROXY = $proxy
+        $env:http_proxy = $proxy
+        $env:npm_config_proxy = $proxy
+    }
+
+    if ($HttpsProxy.Trim()) {
+        $proxy = $HttpsProxy.Trim()
+        $env:HTTPS_PROXY = $proxy
+        $env:https_proxy = $proxy
+        $env:npm_config_https_proxy = $proxy
+    }
+
+    if ($NoProxy.Trim()) {
+        $noProxyValue = $NoProxy.Trim()
+        $env:NO_PROXY = $noProxyValue
+        $env:no_proxy = $noProxyValue
     }
 
     $pathParts = New-Object System.Collections.Generic.List[string]
@@ -435,6 +461,23 @@ function Find-GitBash {
     Write-Warn "Git Bash was not found. Hermes terminal features may need HERMES_GIT_BASH_PATH in the launcher."
 }
 
+function Move-PartialInstallDirAside {
+    $safeInstallDir = Assert-UnderRoot $script:InstallDir "partial InstallDir"
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $archiveDir = Join-Path $script:AppDir "hermes-agent.partial-$timestamp"
+    $suffix = 1
+    while (Test-Path -LiteralPath $archiveDir) {
+        $archiveDir = Join-Path $script:AppDir "hermes-agent.partial-$timestamp-$suffix"
+        $suffix++
+    }
+    [void](Assert-UnderRoot $archiveDir "partial InstallDir archive")
+
+    Write-Warn "InstallDir exists but is not a valid git repo. Moving it aside for retry:"
+    Write-Warn "  from: $safeInstallDir"
+    Write-Warn "  to:   $archiveDir"
+    Rename-Item -LiteralPath $safeInstallDir -NewName (Split-Path $archiveDir -Leaf) -Force
+}
+
 function Update-Repository {
     $repoValid = $false
     if (Test-Path -LiteralPath (Join-Path $script:InstallDir ".git")) {
@@ -478,7 +521,7 @@ function Update-Repository {
     if (Test-Path -LiteralPath $script:InstallDir) {
         $existing = Get-ChildItem -LiteralPath $script:InstallDir -Force -ErrorAction SilentlyContinue
         if ($existing) {
-            throw "InstallDir exists but is not a git repo: $script:InstallDir. Move it aside or remove it manually."
+            Move-PartialInstallDirAside
         }
     } else {
         New-Item -ItemType Directory -Force -Path (Split-Path $script:InstallDir -Parent) | Out-Null

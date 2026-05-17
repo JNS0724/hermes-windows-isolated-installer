@@ -123,6 +123,9 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | `-PypiIndexUrl` | Empty | Internal PyPI/simple index URL for uv and pip. |
 | `-NpmRegistry` | Empty | Internal npm registry URL. |
 | `-PythonInstallMirror` | Empty | uv Python install mirror. |
+| `-HttpProxy` | Empty | Process-local HTTP proxy used by git, uv, pip and npm during install. |
+| `-HttpsProxy` | Empty | Process-local HTTPS proxy used by git, uv, pip and npm during install. |
+| `-NoProxy` | Empty | Process-local no-proxy list. |
 | `-UvExe` | Empty | Explicit path to `uv.exe`. |
 | `-NodeZip` | Empty | Node Windows zip to unpack into `runtime\node22`. |
 | `-LogDir` | `<install-root>\logs` | Installer diagnostic log directory. |
@@ -184,6 +187,10 @@ home\logs\launcher-YYYYMMDD.log
 ```
 
 The launcher log records resolved paths, Git Bash detection, proxy variable presence, and the Hermes exit code. It does not record prompts or API key values.
+
+## Re-running
+
+The installer is safe to run again after a failed install. If `git clone` failed after creating a partial non-repository checkout, the next run moves that partial folder to `app\hermes-agent.partial-YYYYMMDD-HHMMSS` and retries a fresh clone. If a valid git checkout already exists, the installer updates it with `fetch`, `checkout`, and submodule sync.
 
 ## Validate The Installer
 

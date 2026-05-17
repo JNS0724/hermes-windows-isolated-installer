@@ -123,6 +123,9 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | `-PypiIndexUrl` | 空 | uv 和 pip 使用的 PyPI/simple 镜像地址。 |
 | `-NpmRegistry` | 空 | npm registry 地址。 |
 | `-PythonInstallMirror` | 空 | uv Python 安装镜像地址。 |
+| `-HttpProxy` | 空 | 安装阶段供 git、uv、pip、npm 使用的进程级 HTTP 代理。 |
+| `-HttpsProxy` | 空 | 安装阶段供 git、uv、pip、npm 使用的进程级 HTTPS 代理。 |
+| `-NoProxy` | 空 | 安装阶段使用的进程级 no-proxy 列表。 |
 | `-UvExe` | 空 | 显式指定 `uv.exe` 路径。 |
 | `-NodeZip` | 空 | Node Windows zip 包，会解压到 `runtime\node22`。 |
 | `-LogDir` | `<安装根目录>\logs` | 安装器诊断日志目录。 |
@@ -184,6 +187,10 @@ home\logs\launcher-YYYYMMDD.log
 ```
 
 运行日志会记录解析到的路径、Git Bash 探测结果、代理变量是否存在以及 Hermes 退出码。日志不会记录 prompt 内容，也不会记录 API key 明文。
+
+## 重新运行
+
+安装器可以在失败后重新运行。如果 `git clone` 失败后留下了一个残缺的非 git checkout 目录，下一次运行会把它移动到 `app\hermes-agent.partial-YYYYMMDD-HHMMSS`，然后重新 clone。如果已经存在有效 git checkout，则会走 `fetch`、`checkout` 和 submodule 同步。
 
 ## 验证安装器
 

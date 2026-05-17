@@ -257,6 +257,11 @@ name = "hermes-agent"
 version = "0.0.0"
 '@
 
+    Write-Step "Creating a stale partial checkout to verify re-run repair"
+    $partialInstallDir = Join-Path $installRoot "app\hermes-agent"
+    New-Item -ItemType Directory -Force -Path $partialInstallDir | Out-Null
+    Write-TextNoBom -Path (Join-Path $partialInstallDir "stale-clone-marker.txt") -Content "partial clone`r`n"
+
     Write-Step "Running installer from sandbox target without -Root"
     $env:PATH = "$(Split-Path $fakeGit -Parent);$env:PATH"
     Push-Location $installRoot
@@ -282,6 +287,10 @@ version = "0.0.0"
     Assert-File $config
     Assert-File $envFile
     Assert-File $launcher
+
+    $partialArchives = @(Get-ChildItem -LiteralPath (Join-Path $installRoot "app") -Directory -Filter "hermes-agent.partial-*" -ErrorAction SilentlyContinue)
+    Assert-True ($partialArchives.Count -eq 1) "Expected stale partial checkout to be moved aside once"
+    Assert-File (Join-Path $partialArchives[0].FullName "stale-clone-marker.txt")
 
     $configText = Get-Content -LiteralPath $config -Raw
     Assert-True ($configText.Contains('${CORP_LLM_API_KEY}')) "config.yaml should preserve literal `${CORP_LLM_API_KEY}"
