@@ -117,11 +117,12 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | `-PythonInstallMirror` | Empty | uv Python install mirror. |
 | `-UvExe` | Empty | Explicit path to `uv.exe`. |
 | `-NodeZip` | Empty | Node Windows zip to unpack into `runtime\node22`. |
+| `-LogDir` | `<install-root>\logs` | Installer diagnostic log directory. |
 | `-InstallNodeDeps` | Off | Install optional Node dependencies using local managed Node. |
 | `-ForceRecreateVenv` | Off | Delete and recreate the local venv under the install root. |
 | `-SkipDependencyInstall` | Off | Create layout and venv but skip Python dependency installation. Useful for tests. |
 | `-SkipConfigTemplate` | Off | Do not create starter `home\.env`, `home\config.yaml`, or `home\SOUL.md`. |
-| `-DryRun` | Off | Print planned steps without changing files. |
+| `-DryRun` | Off | Print planned steps without changing install files. Diagnostic logs are still written. |
 
 ## Configuration
 
@@ -158,6 +159,23 @@ Keep secrets in `home\.env`:
 CORP_LLM_API_KEY=
 NO_PROXY=.corp.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,localhost,127.0.0.1
 ```
+
+## Logs
+
+The installer writes diagnostics to:
+
+```text
+logs\install-YYYYMMDD-HHMMSS.log
+logs\install-transcript-YYYYMMDD-HHMMSS.log
+```
+
+The generated launcher writes startup diagnostics to:
+
+```text
+home\logs\launcher-YYYYMMDD.log
+```
+
+The launcher log records resolved paths, Git Bash detection, proxy variable presence, and the Hermes exit code. It does not record prompts or API key values.
 
 ## Validate The Installer
 

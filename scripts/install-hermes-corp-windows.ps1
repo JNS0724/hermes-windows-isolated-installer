@@ -32,6 +32,11 @@ Enterprise mirrors:
   -NpmRegistry https://npm.corp/repository/npm/
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
 
+Diagnostics:
+  Installer logs are written to <root>\logs by default.
+  Runtime launcher logs are written to <root>\home\logs.
+  Pass -LogDir to place installer logs elsewhere.
+
 If you need completely controlled binary downloads, pre-place uv.exe and
 node.exe under the runtime paths or pass -UvExe/-NodeZip.
 #>
@@ -48,6 +53,7 @@ param(
     [string]$PythonInstallMirror = "",
     [string]$UvExe = "",
     [string]$NodeZip = "",
+    [string]$LogDir = "",
     [switch]$InstallNodeDeps,
     [switch]$ForceRecreateVenv,
     [switch]$SkipDependencyInstall,
@@ -73,20 +79,45 @@ $script:GitCmd = $null
 $script:NodeCmd = $null
 $script:NpmCmd = $null
 $script:GitBashPath = $null
+$script:LogDir = $null
+$script:LogPath = $null
+$script:TranscriptPath = $null
+$script:TranscriptStarted = $false
+
+function Write-LogLine {
+    param(
+        [string]$Level,
+        [string]$Message
+    )
+
+    if (-not $script:LogPath) {
+        return
+    }
+
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+    try {
+        Add-Content -LiteralPath $script:LogPath -Encoding UTF8 -Value "[$timestamp][$Level] $Message"
+    } catch {
+        # Logging must never break installation.
+    }
+}
 
 function Write-Info {
     param([string]$Message)
     Write-Host "[INFO] $Message" -ForegroundColor Cyan
+    Write-LogLine -Level "INFO" -Message $Message
 }
 
 function Write-Ok {
     param([string]$Message)
     Write-Host "[ OK ] $Message" -ForegroundColor Green
+    Write-LogLine -Level "OK" -Message $Message
 }
 
 function Write-Warn {
     param([string]$Message)
     Write-Host "[WARN] $Message" -ForegroundColor Yellow
+    Write-LogLine -Level "WARN" -Message $Message
 }
 
 function Invoke-Step {
@@ -98,9 +129,20 @@ function Invoke-Step {
     Write-Info $Description
     if ($DryRun) {
         Write-Host "       dry-run: skipped"
+        Write-LogLine -Level "DRYRUN" -Message $Description
         return
     }
-    & $Action
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        Write-LogLine -Level "STEP" -Message "BEGIN $Description"
+        & $Action
+        Write-LogLine -Level "STEP" -Message ("END {0} ({1:N2}s)" -f $Description, $sw.Elapsed.TotalSeconds)
+    } catch {
+        Write-LogLine -Level "ERROR" -Message ("FAILED {0}: {1}" -f $Description, $_.Exception.Message)
+        Write-LogLine -Level "ERROR" -Message ("ScriptStackTrace: {0}" -f $_.ScriptStackTrace)
+        throw
+    }
 }
 
 function Resolve-FullPath {
@@ -129,6 +171,87 @@ function Assert-UnderRoot {
         throw "$Purpose must stay under root '$root'. Got: $full"
     }
     return $full
+}
+
+function Redact-ForLog {
+    param([string]$Value)
+
+    if (-not $Value) {
+        return "<not set>"
+    }
+
+    if ($Value -match '^[A-Za-z]:\\') {
+        return $Value
+    }
+
+    try {
+        $uri = [Uri]$Value
+        $authority = $uri.Host
+        if (-not $uri.IsDefaultPort) {
+            $authority = "${authority}:$($uri.Port)"
+        }
+        return "$($uri.Scheme)://$authority$($uri.AbsolutePath)"
+    } catch {
+        if ($Value.Length -gt 80) {
+            return "<set length=$($Value.Length)>"
+        }
+        return $Value
+    }
+}
+
+function Start-InstallLog {
+    if ($LogDir.Trim()) {
+        $script:LogDir = Resolve-FullPath $LogDir.Trim()
+    } else {
+        $script:LogDir = Join-Path $script:RootPath "logs"
+    }
+
+    New-Item -ItemType Directory -Force -Path $script:LogDir | Out-Null
+    $script:LogPath = Join-Path $script:LogDir ("install-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    $script:TranscriptPath = Join-Path $script:LogDir ("install-transcript-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    Write-LogLine -Level "INFO" -Message "Installer log started"
+    Write-LogLine -Level "INFO" -Message "Root=$script:RootPath"
+    Write-LogLine -Level "INFO" -Message "PowerShell=$($PSVersionTable.PSVersion)"
+    Write-LogLine -Level "INFO" -Message "OS=$([Environment]::OSVersion.VersionString)"
+    Write-LogLine -Level "INFO" -Message "ProcessArch=$([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
+
+    try {
+        Start-Transcript -LiteralPath $script:TranscriptPath -Append | Out-Null
+        $script:TranscriptStarted = $true
+    } catch {
+        Write-LogLine -Level "WARN" -Message ("Start-Transcript failed: {0}" -f $_.Exception.Message)
+    }
+}
+
+function Stop-InstallLog {
+    if ($script:TranscriptStarted) {
+        try {
+            Stop-Transcript | Out-Null
+        } catch {
+            # Ignore transcript shutdown failures.
+        }
+        $script:TranscriptStarted = $false
+    }
+}
+
+function Write-EnvironmentDiagnostics {
+    Write-LogLine -Level "INFO" -Message "Diagnostics: env snapshot begins"
+    foreach ($name in @(
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+        "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "UV_DEFAULT_INDEX", "PIP_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR",
+        "npm_config_registry", "HERMES_HOME", "UV_CACHE_DIR", "TERMINAL_CWD"
+    )) {
+        $value = [Environment]::GetEnvironmentVariable($name, "Process")
+        if ($name -match "KEY|TOKEN|SECRET|PASSWORD") {
+            $display = if ($value) { "<set length=$($value.Length)>" } else { "<not set>" }
+        } else {
+            $display = Redact-ForLog $value
+        }
+        Write-LogLine -Level "INFO" -Message ("ENV {0}={1}" -f $name, $display)
+    }
+    Write-LogLine -Level "INFO" -Message ("PATH contains root: {0}" -f ($env:PATH -like "*$script:RootPath*"))
+    Write-LogLine -Level "INFO" -Message "Diagnostics: env snapshot ends"
 }
 
 function Initialize-Paths {
@@ -654,6 +777,69 @@ param(
 `$VenvScripts = Join-Path `$InstallDir 'venv\Scripts'
 `$NodeDir = Join-Path `$Root 'runtime\node$NodeMajorVersion'
 `$HermesExe = Join-Path `$VenvScripts 'hermes.exe'
+`$LauncherLogDir = Join-Path `$HermesHome 'logs'
+`$LauncherLogPath = Join-Path `$LauncherLogDir ("launcher-{0}.log" -f (Get-Date -Format 'yyyyMMdd'))
+
+function Write-HermesLauncherLog {
+    param(
+        [string]`$Level,
+        [string]`$Message
+    )
+
+    try {
+        if (-not (Test-Path -LiteralPath `$LauncherLogDir)) {
+            New-Item -ItemType Directory -Force -Path `$LauncherLogDir | Out-Null
+        }
+        `$timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff'
+        Add-Content -LiteralPath `$LauncherLogPath -Encoding UTF8 -Value "[`$timestamp][`$Level] `$Message"
+    } catch {
+        # Launcher logging must never block Hermes startup.
+    }
+}
+
+function Redact-HermesLauncherValue {
+    param([string]`$Value)
+
+    if (-not `$Value) {
+        return '<not set>'
+    }
+
+    if (`$Value -match '^[A-Za-z]:\\') {
+        return `$Value
+    }
+
+    try {
+        `$uri = [Uri]`$Value
+        `$authority = `$uri.Host
+        if (-not `$uri.IsDefaultPort) {
+            `$authority = "`${authority}:`$(`$uri.Port)"
+        }
+        return "`$(`$uri.Scheme)://`$authority`$(`$uri.AbsolutePath)"
+    } catch {
+        if (`$Value.Length -gt 80) {
+            return "<set length=`$(`$Value.Length)>"
+        }
+        return `$Value
+    }
+}
+
+trap {
+    Write-HermesLauncherLog -Level 'ERROR' -Message ("Unhandled launcher error: {0}" -f `$_.Exception.Message)
+    Write-HermesLauncherLog -Level 'ERROR' -Message ("ScriptStackTrace: {0}" -f `$_.ScriptStackTrace)
+    Write-Host "[FAIL] `$(`$_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Launcher log: `$LauncherLogPath" -ForegroundColor Yellow
+    exit 1
+}
+
+Write-HermesLauncherLog -Level 'INFO' -Message 'Launcher started'
+Write-HermesLauncherLog -Level 'INFO' -Message "Root=`$Root"
+Write-HermesLauncherLog -Level 'INFO' -Message "InstallDir=`$InstallDir"
+Write-HermesLauncherLog -Level 'INFO' -Message "HermesHome=`$HermesHome"
+Write-HermesLauncherLog -Level 'INFO' -Message "HermesExe=`$HermesExe exists=`$(Test-Path -LiteralPath `$HermesExe)"
+Write-HermesLauncherLog -Level 'INFO' -Message "ArgsCount=`$(`$ArgsToHermes.Count)"
+Write-HermesLauncherLog -Level 'INFO' -Message "PowerShell=`$(`$PSVersionTable.PSVersion)"
+Write-HermesLauncherLog -Level 'INFO' -Message "OS=`$([Environment]::OSVersion.VersionString)"
+Write-HermesLauncherLog -Level 'INFO' -Message "ProcessArch=`$([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
 
 if (-not (Test-Path -LiteralPath `$HermesExe)) {
     throw "Hermes executable not found: `$HermesExe"
@@ -709,6 +895,8 @@ $GitBashPath = Find-HermesGitBash
 if ($GitBashPath) {
     $env:HERMES_GIT_BASH_PATH = $GitBashPath
 }
+
+Write-HermesLauncherLog -Level 'INFO' -Message "GitBashPath=$(if ($GitBashPath) { $GitBashPath } else { '<not found>' })"
 '@
 
     $launcher += @"
@@ -719,8 +907,25 @@ if (Test-Path -LiteralPath (Join-Path `$NodeDir 'node.exe')) {
     `$env:PATH = "`$VenvScripts;`$env:PATH"
 }
 
+foreach (`$name in @(
+    'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY',
+    'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
+    'HERMES_HOME', 'UV_CACHE_DIR', 'TERMINAL_CWD', 'HERMES_GIT_BASH_PATH'
+)) {
+    `$value = [Environment]::GetEnvironmentVariable(`$name, 'Process')
+    Write-HermesLauncherLog -Level 'INFO' -Message ("ENV {0}={1}" -f `$name, (Redact-HermesLauncherValue `$value))
+}
+
+`$pathContainsRoot = `$env:PATH -like "*`$Root*"
+Write-HermesLauncherLog -Level 'INFO' -Message "PATH contains root: `$pathContainsRoot"
+Write-HermesLauncherLog -Level 'INFO' -Message "Hermes process starting"
 & `$HermesExe @ArgsToHermes
-exit `$LASTEXITCODE
+`$exitCode = `$LASTEXITCODE
+Write-HermesLauncherLog -Level 'INFO' -Message "Hermes process exited with code `$exitCode"
+if (`$exitCode -ne 0) {
+    Write-Host "Launcher log: `$LauncherLogPath" -ForegroundColor Yellow
+}
+exit `$exitCode
 "@
 
     Write-TextNoBom -Path $launcherPath -Content $launcher
@@ -742,16 +947,20 @@ function Test-Install {
 
 function Main {
     Initialize-Paths
+    Start-InstallLog
 
     Write-Host ""
     Write-Host "Hermes Agent native Windows isolated installer" -ForegroundColor Magenta
     Write-Host "Root:       $script:RootPath"
     Write-Host "Repo:       $RepoUrl"
     Write-Host "Branch/tag: $Branch"
+    Write-Host "Log:        $script:LogPath"
+    Write-Host "Transcript: $script:TranscriptPath"
     Write-Host ""
 
     Invoke-Step "Creating local directory layout" { New-DirectoryLayout }
     Invoke-Step "Setting process-local environment" { Set-ProcessOnlyEnvironment }
+    Invoke-Step "Writing diagnostic environment snapshot" { Write-EnvironmentDiagnostics }
     Invoke-Step "Checking uv" { Ensure-Uv }
     Invoke-Step "Checking git" { Ensure-Git; Find-GitBash }
     Invoke-Step "Cloning/updating hermes-agent" { Update-Repository }
@@ -765,7 +974,9 @@ function Main {
 
     Write-Host ""
     if ($DryRun) {
-        Write-Ok "Dry-run complete. No files were changed."
+        Write-Ok "Dry-run complete. No install files were changed; diagnostic logs were written."
+        Write-Host "Install log: $script:LogPath"
+        Write-Host "Transcript:  $script:TranscriptPath"
     } else {
         Write-Ok "Hermes isolated install complete"
         Write-Host ""
@@ -774,14 +985,25 @@ function Main {
         Write-Host "  powershell -ExecutionPolicy Bypass -File `"$script:BinDir\hermes-corp.ps1`""
         Write-Host ""
         Write-Host "Nothing was written to User/Machine PATH or User/Machine HERMES_HOME."
+        Write-Host "Install log: $script:LogPath"
+        Write-Host "Transcript:  $script:TranscriptPath"
     }
 }
 
 try {
     Main
 } catch {
+    Write-LogLine -Level "ERROR" -Message ("Installer failed: {0}" -f $_.Exception.Message)
+    Write-LogLine -Level "ERROR" -Message ("ScriptStackTrace: {0}" -f $_.ScriptStackTrace)
     Write-Host ""
     Write-Host "[FAIL] $($_.Exception.Message)" -ForegroundColor Red
+    if ($script:LogPath) {
+        Write-Host "Log: $script:LogPath" -ForegroundColor Yellow
+        Write-Host "Transcript: $script:TranscriptPath" -ForegroundColor Yellow
+    }
     Write-Host ""
+    Stop-InstallLog
     exit 1
+} finally {
+    Stop-InstallLog
 }

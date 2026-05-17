@@ -117,11 +117,12 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | `-PythonInstallMirror` | 空 | uv Python 安装镜像地址。 |
 | `-UvExe` | 空 | 显式指定 `uv.exe` 路径。 |
 | `-NodeZip` | 空 | Node Windows zip 包，会解压到 `runtime\node22`。 |
+| `-LogDir` | `<安装根目录>\logs` | 安装器诊断日志目录。 |
 | `-InstallNodeDeps` | 关闭 | 使用本地托管 Node 安装可选 Node 依赖。 |
 | `-ForceRecreateVenv` | 关闭 | 删除并重建安装目录下的本地 venv。 |
 | `-SkipDependencyInstall` | 关闭 | 创建目录和 venv，但跳过 Python 依赖安装，主要用于测试。 |
 | `-SkipConfigTemplate` | 关闭 | 不创建 `home\.env`、`home\config.yaml`、`home\SOUL.md` 模板。 |
-| `-DryRun` | 关闭 | 只打印计划执行步骤，不修改文件。 |
+| `-DryRun` | 关闭 | 只打印计划执行步骤，不修改安装文件；诊断日志仍会写入。 |
 
 ## 配置
 
@@ -158,6 +159,23 @@ mcp_servers: {}
 CORP_LLM_API_KEY=
 NO_PROXY=.corp.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,localhost,127.0.0.1
 ```
+
+## 日志
+
+安装器会写入诊断日志：
+
+```text
+logs\install-YYYYMMDD-HHMMSS.log
+logs\install-transcript-YYYYMMDD-HHMMSS.log
+```
+
+生成的运行入口会写入启动日志：
+
+```text
+home\logs\launcher-YYYYMMDD.log
+```
+
+运行日志会记录解析到的路径、Git Bash 探测结果、代理变量是否存在以及 Hermes 退出码。日志不会记录 prompt 内容，也不会记录 API key 明文。
 
 ## 验证安装器
 
