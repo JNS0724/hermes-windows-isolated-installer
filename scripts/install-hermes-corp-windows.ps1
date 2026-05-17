@@ -197,6 +197,7 @@ function Set-ProcessOnlyEnvironment {
     $env:PIP_REQUIRE_VIRTUALENV = "true"
     $env:PYTHONUTF8 = "1"
     $env:PYTHONIOENCODING = "utf-8"
+    $env:TERMINAL_CWD = $script:RootPath
     $env:GIT_CONFIG_COUNT = "1"
     $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
     $env:GIT_CONFIG_VALUE_0 = "false"
@@ -533,6 +534,54 @@ function Write-TextNoBom {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Patch-WindowsHermesLocalBackend {
+    $localBackend = Join-Path $script:InstallDir "tools\environments\local.py"
+    if (-not (Test-Path -LiteralPath $localBackend)) {
+        Write-Warn "Hermes local backend not found; Windows cwd patch skipped."
+        return
+    }
+
+    $content = [System.IO.File]::ReadAllText($localBackend)
+
+    if ($content -notmatch "def _windows_git_bash_to_native") {
+        $helper = @'
+def _windows_git_bash_to_native(path: str) -> str:
+    if not (_IS_WINDOWS and path):
+        return path
+    match = re.match(r"^/([a-zA-Z])(?:/|$)", path)
+    if not match:
+        return path
+    drive = match.group(1).upper() + ":"
+    rest = path[2:].replace("/", "\\")
+    return drive + rest
+
+
+def _path_is_dir(path: str) -> bool:
+    if not path:
+        return False
+    if os.path.isdir(path):
+        return True
+    native = _windows_git_bash_to_native(path)
+    return native != path and os.path.isdir(native)
+
+
+'@
+        $insertAt = $content.IndexOf("def _resolve_safe_cwd")
+        if ($insertAt -lt 0) {
+            Write-Warn "Hermes local backend cwd patch anchor not found."
+            return
+        }
+        $content = $content.Substring(0, $insertAt) + $helper + $content.Substring($insertAt)
+    }
+
+    $content = $content.Replace("if cwd and os.path.isdir(cwd):", "if _path_is_dir(cwd):")
+    $content = $content.Replace("if os.path.isdir(parent):", "if _path_is_dir(parent):")
+    $content = $content.Replace("if cwd_path and os.path.isdir(cwd_path):", "if cwd_path and _path_is_dir(cwd_path):")
+
+    Write-TextNoBom -Path $localBackend -Content $content
+    Write-Ok "Applied Windows Git Bash cwd compatibility patch"
+}
+
 function Copy-ConfigTemplates {
     if ($SkipConfigTemplate) {
         Write-Warn "Config template creation skipped."
@@ -621,6 +670,7 @@ if (-not (Test-Path -LiteralPath `$HermesExe)) {
 `$env:PIP_REQUIRE_VIRTUALENV = 'true'
 `$env:PYTHONUTF8 = '1'
 `$env:PYTHONIOENCODING = 'utf-8'
+`$env:TERMINAL_CWD = `$Root
 "@
 
     if ($escapedGitBash) {
@@ -674,6 +724,7 @@ function Main {
     Invoke-Step "Creating isolated Python virtual environment" { Ensure-Venv }
     Invoke-Step "Installing Python dependencies into local venv" { Install-PythonDependencies }
     Invoke-Step "Installing optional Node dependencies" { Install-NodeDependencies }
+    Invoke-Step "Patching Hermes Windows local backend" { Patch-WindowsHermesLocalBackend }
     Invoke-Step "Creating local Hermes config templates" { Copy-ConfigTemplates }
     Invoke-Step "Writing process-local launcher" { Write-Launcher }
     Invoke-Step "Verifying Hermes executable" { Test-Install }
