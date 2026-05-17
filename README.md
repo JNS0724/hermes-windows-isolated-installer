@@ -187,16 +187,24 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
 
 ## Uninstall
 
-Because the installer does not write global environment variables or global package state, uninstall is usually just deleting the install root:
+Use the bundled uninstaller from the install root:
 
 ```powershell
-Remove-Item D:\tools\hermes -Recurse -Force
+powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1
 ```
 
-If you want to keep Hermes config, sessions, and logs, keep the `home` directory and delete only generated runtime folders:
+By default it removes generated code/runtime folders and keeps `home`, matching the upstream Hermes uninstall behavior of preserving user config for reinstall.
+
+To remove local config, auth, sessions, skills and logs as well:
 
 ```powershell
-Remove-Item .\app, .\runtime, .\uv-cache, .\bin -Recurse -Force
+powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -RemoveHome
+```
+
+For a fuller cleanup pass that also checks process, Startup shortcut, scheduled task, and User environment entries under this install root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProcesses -CleanUserEnvironment -RemoveHome
 ```
 
 ## Notes

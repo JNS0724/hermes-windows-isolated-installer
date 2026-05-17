@@ -187,16 +187,24 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
 
 ## 卸载
 
-因为安装器不写全局环境变量，也不写全局包状态，所以通常直接删除安装根目录即可：
+在安装根目录运行自带卸载脚本：
 
 ```powershell
-Remove-Item D:\tools\hermes -Recurse -Force
+powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1
 ```
 
-如果想保留 Hermes 配置、会话和日志，可以保留 `home` 目录，只删除运行时目录：
+默认会删除代码、虚拟环境、运行时、uv 缓存和启动入口，并保留 `home`，这与官方 Hermes 卸载默认保留用户配置的语义一致，方便后续重装。
+
+如果要连本地配置、认证信息、会话、技能和日志一起删除：
 
 ```powershell
-Remove-Item .\app, .\runtime, .\uv-cache, .\bin -Recurse -Force
+powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -RemoveHome
+```
+
+如果要做更完整的清理，同时检查进程、启动目录快捷方式、计划任务和 User 环境变量里是否还有指向该安装目录的项：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProcesses -CleanUserEnvironment -RemoveHome
 ```
 
 ## 说明
