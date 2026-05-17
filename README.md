@@ -64,6 +64,14 @@ cd D:\tools\hermes
 powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1
 ```
 
+If PowerShell reports that the script is not digitally signed, use the CMD wrapper instead:
+
+```cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd
+```
+
+The CMD wrapper starts PowerShell with process-local `-ExecutionPolicy Bypass` and does not change system policy. If your enterprise enforces `AllSigned` through Group Policy, use your enterprise code-signing certificate to sign the `.ps1` files instead; Group Policy cannot be overridden by this wrapper.
+
 After installation:
 
 ```powershell
@@ -209,6 +217,13 @@ Use the bundled uninstaller from the install root:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1
+```
+
+If PowerShell script execution is blocked, use the CMD wrapper:
+
+```cmd
+uninstall-hermes-corp.cmd -DryRun
+uninstall-hermes-corp.cmd
 ```
 
 By default it removes generated code/runtime folders and keeps `home`, matching the upstream Hermes uninstall behavior of preserving user config for reinstall.

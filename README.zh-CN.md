@@ -64,6 +64,14 @@ cd D:\tools\hermes
 powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1
 ```
 
+如果 PowerShell 提示脚本未进行数字签名、无法运行，可以改用 CMD 包装入口：
+
+```cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd
+```
+
+这个 CMD 包装入口只会用当前进程级的 `-ExecutionPolicy Bypass` 启动 PowerShell，不会修改系统策略。如果企业通过组策略强制 `AllSigned`，则需要使用企业代码签名证书给 `.ps1` 文件签名；这种组策略不能靠包装脚本绕过。
+
 安装完成后：
 
 ```powershell
@@ -209,6 +217,13 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1
+```
+
+如果 PowerShell 脚本执行被拦截，可以使用 CMD 包装入口：
+
+```cmd
+uninstall-hermes-corp.cmd -DryRun
+uninstall-hermes-corp.cmd
 ```
 
 默认会删除代码、虚拟环境、运行时、uv 缓存和启动入口，并保留 `home`，这与官方 Hermes 卸载默认保留用户配置的语义一致，方便后续重装。
