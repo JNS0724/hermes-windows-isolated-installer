@@ -1,5 +1,7 @@
 # Hermes Windows Isolated Installer
 
+[中文说明](README.zh-CN.md)
+
 Enterprise-friendly native Windows installer for [Hermes Agent](https://github.com/NousResearch/hermes-agent): uv-based, no WSL, isolated runtime, and no global environment changes.
 
 This project provides a small PowerShell bootstrapper for installing Hermes Agent on Windows while keeping Python, uv cache, optional Node runtime, Hermes config, and launch-time environment variables under one local directory.
