@@ -1,0 +1,32 @@
+# Installer-generated runtime layout
+/app/
+/home/
+/runtime/
+/uv-cache/
+/bin/
+
+# Local sandbox validation output
+/.sandbox/
+
+# Python / Node local artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+node_modules/
+.venv/
+venv/
+
+# Logs and local archives
+*.log
+*.tmp
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
