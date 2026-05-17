@@ -17,7 +17,7 @@ It deliberately does not:
 
 It does:
 - prepare hermes-agent from a local source directory or source zip
-- optionally clone/update hermes-agent from GitHub when no local source is given
+- optionally clone/update hermes-agent from GitHub only when -AllowGitClone is given
 - create a local uv-managed Python 3.11 virtual environment
 - optionally use a local/managed Node runtime for Node-based dependencies
 - create a hermes-corp.ps1 launcher that sets process-local env vars
@@ -35,12 +35,15 @@ Enterprise mirrors:
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
   -HttpsProxy http://proxy.corp.local:8080
   -NoProxy .corp.local,10.0.0.0/8,localhost,127.0.0.1
+  If -PypiIndexUrl is omitted, the installer tries to read pip config from
+  PIP_CONFIG_FILE, %APPDATA%\pip\pip.ini and %PROGRAMDATA%\pip\pip.ini.
 
 Manual source install:
   Download Hermes Agent source zip from GitHub, extract it locally, then pass:
   -SourcePath C:\path\to\hermes-agent-source
   Or pass the downloaded zip directly:
   -SourceZip C:\path\to\hermes-agent-v2026.5.7.zip
+  Git clone fallback is disabled unless -AllowGitClone is passed.
 
 Diagnostics:
   Installer logs are written to <root>\logs by default.
@@ -69,6 +72,7 @@ param(
     [string]$UvExe = "",
     [string]$NodeZip = "",
     [string]$LogDir = "",
+    [switch]$AllowGitClone,
     [switch]$InstallNodeDeps,
     [switch]$ForceRecreateVenv,
     [switch]$SkipDependencyInstall,
@@ -98,6 +102,7 @@ $script:LogDir = $null
 $script:LogPath = $null
 $script:TranscriptPath = $null
 $script:TranscriptStarted = $false
+$script:PythonMirrorSource = ""
 
 function Write-LogLine {
     param(
@@ -199,6 +204,10 @@ function Redact-ForLog {
         return $Value
     }
 
+    if (($Value -match '://') -and ($Value -match '\s')) {
+        return (($Value -split '\s+') | Where-Object { $_ } | ForEach-Object { Redact-ForLog $_ }) -join " "
+    }
+
     try {
         $uri = [Uri]$Value
         $authority = $uri.Host
@@ -211,6 +220,263 @@ function Redact-ForLog {
             return "<set length=$($Value.Length)>"
         }
         return $Value
+    }
+}
+
+function Get-ProcessEnv {
+    param([string]$Name)
+    return [Environment]::GetEnvironmentVariable($Name, "Process")
+}
+
+function Set-ProcessEnvIfValue {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    if ($Value -and $Value.Trim()) {
+        [Environment]::SetEnvironmentVariable($Name, $Value.Trim(), "Process")
+    }
+}
+
+function Join-ConfigListValue {
+    param([string]$Value)
+
+    if (-not $Value) {
+        return ""
+    }
+
+    return (($Value -split "\s+") | Where-Object { $_ -and $_.Trim() } | ForEach-Object { $_.Trim() }) -join " "
+}
+
+function Get-PipConfigCandidatePaths {
+    $paths = New-Object System.Collections.Generic.List[string]
+
+    if ($env:ProgramData) {
+        $paths.Add((Join-Path $env:ProgramData "pip\pip.ini"))
+    }
+    if ($env:APPDATA) {
+        $paths.Add((Join-Path $env:APPDATA "pip\pip.ini"))
+    }
+    if ($env:USERPROFILE) {
+        $paths.Add((Join-Path $env:USERPROFILE "pip\pip.ini"))
+        $paths.Add((Join-Path $env:USERPROFILE ".pip\pip.ini"))
+    }
+    if ($env:PIP_CONFIG_FILE -and $env:PIP_CONFIG_FILE.Trim()) {
+        $explicit = $env:PIP_CONFIG_FILE.Trim()
+        if ($explicit -notmatch '^(?i:nul)$') {
+            $paths.Add((Resolve-FullPath $explicit))
+        }
+    }
+
+    $seen = @{}
+    foreach ($path in $paths) {
+        if (-not $path) {
+            continue
+        }
+        $full = Resolve-FullPath $path
+        $key = $full.ToLowerInvariant()
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $full
+        }
+    }
+}
+
+function Read-PipConfigFile {
+    param([string]$Path)
+
+    $settings = @{}
+    $section = ""
+    $lastKey = ""
+    $allowedSections = @("global", "install")
+    $allowedKeys = @(
+        "index-url",
+        "extra-index-url",
+        "find-links",
+        "trusted-host",
+        "cert",
+        "client-cert",
+        "proxy"
+    )
+
+    foreach ($rawLine in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+        $raw = [string]$rawLine
+        $trimmed = $raw.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#") -or $trimmed.StartsWith(";")) {
+            continue
+        }
+
+        if ($trimmed -match '^\[(.+)\]$') {
+            $section = $matches[1].Trim().ToLowerInvariant()
+            $lastKey = ""
+            continue
+        }
+
+        if (($allowedSections -contains $section) -and $lastKey -and ($raw -match '^\s+') -and ($allowedKeys -contains $lastKey)) {
+            $settings[$lastKey] = Join-ConfigListValue (($settings[$lastKey] + " " + $trimmed).Trim())
+            continue
+        }
+
+        if (($allowedSections -contains $section) -and ($trimmed -match '^([^:=\s]+)\s*[:=]\s*(.*)$')) {
+            $key = $matches[1].Trim().ToLowerInvariant()
+            $value = $matches[2].Trim()
+            if ($allowedKeys -contains $key) {
+                $settings[$key] = Join-ConfigListValue $value
+                $lastKey = $key
+            } else {
+                $lastKey = ""
+            }
+        }
+    }
+
+    return $settings
+}
+
+function Get-PipConfigSettings {
+    $merged = @{}
+    $sources = @{}
+    $loadedPaths = New-Object System.Collections.Generic.List[string]
+
+    foreach ($path in Get-PipConfigCandidatePaths) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            if ($env:PIP_CONFIG_FILE -and ((Resolve-FullPath $env:PIP_CONFIG_FILE.Trim()).ToLowerInvariant() -eq $path.ToLowerInvariant())) {
+                Write-Warn "PIP_CONFIG_FILE was set but not found: $path"
+            }
+            continue
+        }
+
+        try {
+            $settings = Read-PipConfigFile -Path $path
+            if ($settings.Count -gt 0) {
+                $loadedPaths.Add($path)
+            }
+            foreach ($key in $settings.Keys) {
+                if ($settings[$key]) {
+                    $merged[$key] = $settings[$key]
+                    $sources[$key] = $path
+                }
+            }
+        } catch {
+            Write-Warn "Could not read pip config '$path': $($_.Exception.Message)"
+        }
+    }
+
+    return @{
+        Settings = $merged
+        Sources = $sources
+        LoadedPaths = @($loadedPaths)
+    }
+}
+
+function Set-PythonPackageMirrorEnvironment {
+    $pipConfig = Get-PipConfigSettings
+    $settings = $pipConfig.Settings
+    $sources = $pipConfig.Sources
+
+    foreach ($path in $pipConfig.LoadedPaths) {
+        Write-LogLine -Level "INFO" -Message "Loaded pip config: $path"
+    }
+
+    $indexUrl = ""
+    $indexSource = ""
+    if ($PypiIndexUrl.Trim()) {
+        $indexUrl = $PypiIndexUrl.Trim()
+        $indexSource = "-PypiIndexUrl"
+    } elseif (Get-ProcessEnv "UV_DEFAULT_INDEX") {
+        $indexUrl = Get-ProcessEnv "UV_DEFAULT_INDEX"
+        $indexSource = "UV_DEFAULT_INDEX"
+    } elseif (Get-ProcessEnv "UV_INDEX_URL") {
+        $indexUrl = Get-ProcessEnv "UV_INDEX_URL"
+        $indexSource = "UV_INDEX_URL"
+    } elseif (Get-ProcessEnv "PIP_INDEX_URL") {
+        $indexUrl = Get-ProcessEnv "PIP_INDEX_URL"
+        $indexSource = "PIP_INDEX_URL"
+    } elseif ($settings.ContainsKey("index-url")) {
+        $indexUrl = $settings["index-url"]
+        $indexSource = "pip config: $($sources['index-url'])"
+    }
+
+    if ($indexUrl) {
+        Set-ProcessEnvIfValue -Name "UV_DEFAULT_INDEX" -Value $indexUrl
+        Set-ProcessEnvIfValue -Name "UV_INDEX_URL" -Value $indexUrl
+        Set-ProcessEnvIfValue -Name "PIP_INDEX_URL" -Value $indexUrl
+        $script:PythonMirrorSource = $indexSource
+        Write-Ok ("Python package index: {0} ({1})" -f (Redact-ForLog $indexUrl), $indexSource)
+    } else {
+        Write-Warn "No Python package mirror was detected. uv may try public PyPI unless Hermes dependencies are already cached."
+    }
+
+    $extraIndex = ""
+    $extraSource = ""
+    if (Get-ProcessEnv "UV_INDEX") {
+        $extraIndex = Get-ProcessEnv "UV_INDEX"
+        $extraSource = "UV_INDEX"
+    } elseif (Get-ProcessEnv "UV_EXTRA_INDEX_URL") {
+        $extraIndex = Get-ProcessEnv "UV_EXTRA_INDEX_URL"
+        $extraSource = "UV_EXTRA_INDEX_URL"
+    } elseif (Get-ProcessEnv "PIP_EXTRA_INDEX_URL") {
+        $extraIndex = Get-ProcessEnv "PIP_EXTRA_INDEX_URL"
+        $extraSource = "PIP_EXTRA_INDEX_URL"
+    } elseif ($settings.ContainsKey("extra-index-url")) {
+        $extraIndex = $settings["extra-index-url"]
+        $extraSource = "pip config: $($sources['extra-index-url'])"
+    }
+
+    if ($extraIndex) {
+        Set-ProcessEnvIfValue -Name "UV_INDEX" -Value $extraIndex
+        Set-ProcessEnvIfValue -Name "UV_EXTRA_INDEX_URL" -Value $extraIndex
+        Set-ProcessEnvIfValue -Name "PIP_EXTRA_INDEX_URL" -Value $extraIndex
+        Write-Ok ("Python extra index: {0} ({1})" -f (Redact-ForLog $extraIndex), $extraSource)
+    }
+
+    $findLinks = ""
+    if (Get-ProcessEnv "UV_FIND_LINKS") {
+        $findLinks = Get-ProcessEnv "UV_FIND_LINKS"
+    } elseif (Get-ProcessEnv "PIP_FIND_LINKS") {
+        $findLinks = Get-ProcessEnv "PIP_FIND_LINKS"
+    } elseif ($settings.ContainsKey("find-links")) {
+        $findLinks = $settings["find-links"]
+    }
+
+    if ($findLinks) {
+        Set-ProcessEnvIfValue -Name "UV_FIND_LINKS" -Value $findLinks
+        Set-ProcessEnvIfValue -Name "PIP_FIND_LINKS" -Value $findLinks
+    }
+
+    $trustedHost = ""
+    if (Get-ProcessEnv "UV_INSECURE_HOST") {
+        $trustedHost = Get-ProcessEnv "UV_INSECURE_HOST"
+    } elseif (Get-ProcessEnv "PIP_TRUSTED_HOST") {
+        $trustedHost = Get-ProcessEnv "PIP_TRUSTED_HOST"
+    } elseif ($settings.ContainsKey("trusted-host")) {
+        $trustedHost = $settings["trusted-host"]
+    }
+
+    if ($trustedHost) {
+        Set-ProcessEnvIfValue -Name "UV_INSECURE_HOST" -Value $trustedHost
+        Set-ProcessEnvIfValue -Name "PIP_TRUSTED_HOST" -Value $trustedHost
+    }
+
+    if (-not (Get-ProcessEnv "SSL_CERT_FILE") -and $settings.ContainsKey("cert")) {
+        Set-ProcessEnvIfValue -Name "SSL_CERT_FILE" -Value $settings["cert"]
+        Set-ProcessEnvIfValue -Name "PIP_CERT" -Value $settings["cert"]
+    }
+
+    if (-not (Get-ProcessEnv "PIP_CLIENT_CERT") -and $settings.ContainsKey("client-cert")) {
+        Set-ProcessEnvIfValue -Name "PIP_CLIENT_CERT" -Value $settings["client-cert"]
+    }
+
+    if ((-not $HttpProxy.Trim()) -and (-not $HttpsProxy.Trim()) -and $settings.ContainsKey("proxy")) {
+        $pipProxy = $settings["proxy"]
+        if (-not (Get-ProcessEnv "HTTP_PROXY")) {
+            Set-ProcessEnvIfValue -Name "HTTP_PROXY" -Value $pipProxy
+            Set-ProcessEnvIfValue -Name "http_proxy" -Value $pipProxy
+        }
+        if (-not (Get-ProcessEnv "HTTPS_PROXY")) {
+            Set-ProcessEnvIfValue -Name "HTTPS_PROXY" -Value $pipProxy
+            Set-ProcessEnvIfValue -Name "https_proxy" -Value $pipProxy
+        }
     }
 }
 
@@ -254,7 +520,10 @@ function Write-EnvironmentDiagnostics {
     foreach ($name in @(
         "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
         "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-        "UV_DEFAULT_INDEX", "PIP_INDEX_URL", "UV_PYTHON_INSTALL_MIRROR",
+        "UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL",
+        "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "UV_FIND_LINKS", "PIP_FIND_LINKS",
+        "UV_INSECURE_HOST", "PIP_TRUSTED_HOST", "SSL_CERT_FILE", "PIP_CERT", "PIP_CONFIG_FILE",
+        "UV_PYTHON_INSTALL_MIRROR",
         "npm_config_registry", "npm_config_proxy", "npm_config_https_proxy",
         "HERMES_HOME", "UV_CACHE_DIR", "TERMINAL_CWD"
     )) {
@@ -265,6 +534,9 @@ function Write-EnvironmentDiagnostics {
             $display = Redact-ForLog $value
         }
         Write-LogLine -Level "INFO" -Message ("ENV {0}={1}" -f $name, $display)
+    }
+    if ($script:PythonMirrorSource) {
+        Write-LogLine -Level "INFO" -Message ("PythonMirrorSource={0}" -f $script:PythonMirrorSource)
     }
     Write-LogLine -Level "INFO" -Message ("PATH contains root: {0}" -f ($env:PATH -like "*$script:RootPath*"))
     Write-LogLine -Level "INFO" -Message "Diagnostics: env snapshot ends"
@@ -341,11 +613,6 @@ function Set-ProcessOnlyEnvironment {
     $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
     $env:GIT_CONFIG_VALUE_0 = "false"
 
-    if ($PypiIndexUrl.Trim()) {
-        $env:UV_DEFAULT_INDEX = $PypiIndexUrl.Trim()
-        $env:PIP_INDEX_URL = $PypiIndexUrl.Trim()
-    }
-
     if ($PythonInstallMirror.Trim()) {
         $env:UV_PYTHON_INSTALL_MIRROR = $PythonInstallMirror.Trim()
     }
@@ -373,6 +640,8 @@ function Set-ProcessOnlyEnvironment {
         $env:NO_PROXY = $noProxyValue
         $env:no_proxy = $noProxyValue
     }
+
+    Set-PythonPackageMirrorEnvironment
 
     $pathParts = New-Object System.Collections.Generic.List[string]
     $pathParts.Add((Join-Path $script:InstallDir "venv\Scripts"))
@@ -631,8 +900,12 @@ function Update-Repository {
         return
     }
 
+    if (-not $AllowGitClone) {
+        throw "Local source is required. Download Hermes Agent source zip manually, then pass -SourceZip or -SourcePath. To use git explicitly, rerun with -AllowGitClone."
+    }
+
     if (-not $script:GitCmd) {
-        throw "git.exe is required when neither -SourcePath nor -SourceZip is provided."
+        throw "git.exe is required when -AllowGitClone is used without -SourcePath or -SourceZip."
     }
 
     $repoValid = $false
@@ -1161,8 +1434,12 @@ function Main {
             Write-Host "SourceZip:  $($SourceZip.Trim())"
         }
     } else {
-        Write-Host "Repo:       $RepoUrl"
-        Write-Host "Branch/tag: $Branch"
+        Write-Host "Source:     missing local source"
+        Write-Host "Git clone:  $(if ($AllowGitClone) { 'enabled' } else { 'disabled' })"
+        if ($AllowGitClone) {
+            Write-Host "Repo:       $RepoUrl"
+            Write-Host "Branch/tag: $Branch"
+        }
     }
     Write-Host "Log:        $script:LogPath"
     Write-Host "Transcript: $script:TranscriptPath"
@@ -1179,7 +1456,7 @@ function Main {
     Invoke-Step "Setting process-local environment" { Set-ProcessOnlyEnvironment }
     Invoke-Step "Writing diagnostic environment snapshot" { Write-EnvironmentDiagnostics }
     Invoke-Step "Checking uv" { Ensure-Uv }
-    if ($localSourceMode) {
+    if ($localSourceMode -or (-not $AllowGitClone)) {
         Invoke-Step "Checking Git Bash for terminal support (optional)" { Find-GitBash }
     } else {
         Invoke-Step "Checking git" { Ensure-Git; Find-GitBash }

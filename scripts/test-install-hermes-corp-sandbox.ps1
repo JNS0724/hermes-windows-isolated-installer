@@ -123,8 +123,12 @@ $installer = Join-Path $repoRoot "scripts\install-hermes-corp-windows.ps1"
 $sandboxRoot = Join-Path $repoRoot ".sandbox\$SandboxName"
 $sourceRepo = Join-Path $sandboxRoot "source\hermes-agent-fake"
 $sourceZip = Join-Path $sandboxRoot "source\hermes-agent-fake.zip"
+$pipConfigFile = Join-Path $sandboxRoot "pip.ini"
+$fakeUvEnvLog = Join-Path $sandboxRoot "fake-uv-env.log"
 $installRoot = Join-Path $sandboxRoot "target"
 $zipInstallRoot = Join-Path $sandboxRoot "target-zip"
+$missingSourceRoot = Join-Path $sandboxRoot "target-missing-source"
+$missingSourceOutput = Join-Path $sandboxRoot "missing-source.out.log"
 $fakeUv = Join-Path $sandboxRoot "tools\uv.cmd"
 
 Assert-File $installer
@@ -139,22 +143,57 @@ $originalUvCacheDir = $env:UV_CACHE_DIR
 $originalGitConfigCount = $env:GIT_CONFIG_COUNT
 $originalGitConfigKey0 = $env:GIT_CONFIG_KEY_0
 $originalGitConfigValue0 = $env:GIT_CONFIG_VALUE_0
+$originalPipConfigFile = $env:PIP_CONFIG_FILE
+$originalFakeUvLog = $env:FAKE_UV_LOG
+$originalUvDefaultIndex = $env:UV_DEFAULT_INDEX
+$originalUvIndexUrl = $env:UV_INDEX_URL
+$originalUvIndex = $env:UV_INDEX
+$originalUvExtraIndexUrl = $env:UV_EXTRA_INDEX_URL
+$originalPipIndexUrl = $env:PIP_INDEX_URL
+$originalPipExtraIndexUrl = $env:PIP_EXTRA_INDEX_URL
+$originalUvInsecureHost = $env:UV_INSECURE_HOST
+$originalPipTrustedHost = $env:PIP_TRUSTED_HOST
+$originalUvFindLinks = $env:UV_FIND_LINKS
+$originalPipFindLinks = $env:PIP_FIND_LINKS
 
 try {
     $env:GIT_CONFIG_COUNT = "1"
     $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
     $env:GIT_CONFIG_VALUE_0 = "false"
+    $env:PIP_CONFIG_FILE = $pipConfigFile
+    $env:FAKE_UV_LOG = $fakeUvEnvLog
+    $env:UV_DEFAULT_INDEX = $null
+    $env:UV_INDEX_URL = $null
+    $env:UV_INDEX = $null
+    $env:UV_EXTRA_INDEX_URL = $null
+    $env:PIP_INDEX_URL = $null
+    $env:PIP_EXTRA_INDEX_URL = $null
+    $env:UV_INSECURE_HOST = $null
+    $env:PIP_TRUSTED_HOST = $null
+    $env:UV_FIND_LINKS = $null
+    $env:PIP_FIND_LINKS = $null
 
     Write-Step "Resetting sandbox: $sandboxRoot"
     if (Test-Path -LiteralPath $sandboxRoot) {
         Remove-SandboxTree -Path $sandboxRoot
     }
-    New-Item -ItemType Directory -Force -Path $sourceRepo, $installRoot, $zipInstallRoot, (Split-Path $fakeUv -Parent) | Out-Null
+    New-Item -ItemType Directory -Force -Path $sourceRepo, $installRoot, $zipInstallRoot, $missingSourceRoot, (Split-Path $fakeUv -Parent) | Out-Null
 
     Write-Step "Creating fake uv command"
     Write-TextNoBom -Path $fakeUv -Content @'
 @echo off
 setlocal EnableDelayedExpansion
+if not "%FAKE_UV_LOG%"=="" (
+  echo CMD=%*>>"%FAKE_UV_LOG%"
+  echo UV_DEFAULT_INDEX=%UV_DEFAULT_INDEX%>>"%FAKE_UV_LOG%"
+  echo UV_INDEX_URL=%UV_INDEX_URL%>>"%FAKE_UV_LOG%"
+  echo PIP_INDEX_URL=%PIP_INDEX_URL%>>"%FAKE_UV_LOG%"
+  echo UV_INDEX=%UV_INDEX%>>"%FAKE_UV_LOG%"
+  echo UV_EXTRA_INDEX_URL=%UV_EXTRA_INDEX_URL%>>"%FAKE_UV_LOG%"
+  echo PIP_EXTRA_INDEX_URL=%PIP_EXTRA_INDEX_URL%>>"%FAKE_UV_LOG%"
+  echo UV_INSECURE_HOST=%UV_INSECURE_HOST%>>"%FAKE_UV_LOG%"
+  echo PIP_TRUSTED_HOST=%PIP_TRUSTED_HOST%>>"%FAKE_UV_LOG%"
+)
 if "%~1"=="--version" (
   echo uv 0.0.0-sandbox
   exit /b 0
@@ -171,6 +210,17 @@ if "%~1"=="sync" exit /b 0
 if "%~1"=="pip" exit /b 0
 echo unsupported fake uv command: %*
 exit /b 1
+'@
+
+    Write-Step "Creating fake system pip config"
+    Write-TextNoBom -Path $pipConfigFile -Content @'
+[global]
+index-url = https://pypi.corp/simple
+extra-index-url =
+    https://pypi-extra.corp/simple
+trusted-host =
+    pypi.corp
+    pypi-extra.corp
 '@
 
     Write-Step "Creating local fake hermes-agent source tree"
@@ -214,6 +264,15 @@ version = "0.0.0"
     Assert-File $config
     Assert-File $envFile
     Assert-File $launcher
+    Assert-File $fakeUvEnvLog
+    $fakeUvEnvText = Get-Content -LiteralPath $fakeUvEnvLog -Raw
+    Assert-True ($fakeUvEnvText.Contains("UV_DEFAULT_INDEX=https://pypi.corp/simple")) "uv should inherit pip index-url as UV_DEFAULT_INDEX"
+    Assert-True ($fakeUvEnvText.Contains("PIP_INDEX_URL=https://pypi.corp/simple")) "pip should inherit pip index-url as PIP_INDEX_URL"
+    Assert-True ($fakeUvEnvText.Contains("UV_INDEX=https://pypi-extra.corp/simple")) "uv should inherit pip extra-index-url as UV_INDEX"
+    Assert-True ($fakeUvEnvText.Contains("UV_EXTRA_INDEX_URL=https://pypi-extra.corp/simple")) "uv should inherit pip extra-index-url compat env"
+    Assert-True ($fakeUvEnvText.Contains("PIP_EXTRA_INDEX_URL=https://pypi-extra.corp/simple")) "pip should inherit pip extra-index-url"
+    Assert-True ($fakeUvEnvText.Contains("UV_INSECURE_HOST=pypi.corp pypi-extra.corp")) "uv should inherit pip trusted-host"
+    Assert-True ($fakeUvEnvText.Contains("PIP_TRUSTED_HOST=pypi.corp pypi-extra.corp")) "pip should inherit pip trusted-host"
 
     $partialArchives = @(Get-ChildItem -LiteralPath (Join-Path $installRoot "app") -Directory -Filter "hermes-agent.partial-*" -ErrorAction SilentlyContinue)
     Assert-True ($partialArchives.Count -eq 1) "Expected stale partial source directory to be moved aside once"
@@ -246,6 +305,19 @@ version = "0.0.0"
     Assert-File (Join-Path $zipInstalledRepo "hermes_cli\__init__.py")
     Assert-File (Join-Path $zipInstalledRepo "venv\Scripts\hermes.exe")
 
+    Write-Step "Checking missing local source fails without git clone"
+    Push-Location $missingSourceRoot
+    try {
+        & $installer -UvExe $fakeUv -SkipDependencyInstall *> $missingSourceOutput
+        $missingSourceExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    Assert-True ($missingSourceExitCode -ne 0) "installer should fail when no local source is provided and -AllowGitClone is omitted"
+    $missingSourceText = Get-Content -LiteralPath $missingSourceOutput -Raw
+    Assert-True ($missingSourceText.Contains("Local source is required")) "missing source error should explain manual source requirement"
+    Assert-True (-not $missingSourceText.Contains("Cloning ")) "installer should not try git clone unless -AllowGitClone is provided"
+
     Write-Step "Checking global environment was not changed"
     $afterUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $afterUserHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
@@ -262,4 +334,16 @@ version = "0.0.0"
     $env:GIT_CONFIG_COUNT = $originalGitConfigCount
     $env:GIT_CONFIG_KEY_0 = $originalGitConfigKey0
     $env:GIT_CONFIG_VALUE_0 = $originalGitConfigValue0
+    $env:PIP_CONFIG_FILE = $originalPipConfigFile
+    $env:FAKE_UV_LOG = $originalFakeUvLog
+    $env:UV_DEFAULT_INDEX = $originalUvDefaultIndex
+    $env:UV_INDEX_URL = $originalUvIndexUrl
+    $env:UV_INDEX = $originalUvIndex
+    $env:UV_EXTRA_INDEX_URL = $originalUvExtraIndexUrl
+    $env:PIP_INDEX_URL = $originalPipIndexUrl
+    $env:PIP_EXTRA_INDEX_URL = $originalPipExtraIndexUrl
+    $env:UV_INSECURE_HOST = $originalUvInsecureHost
+    $env:PIP_TRUSTED_HOST = $originalPipTrustedHost
+    $env:UV_FIND_LINKS = $originalUvFindLinks
+    $env:PIP_FIND_LINKS = $originalPipFindLinks
 }

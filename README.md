@@ -47,7 +47,7 @@ Required:
 
 Optional:
 
-- Git for Windows, only if you want the installer to use the fallback `git clone` mode
+- Git for Windows, only if you explicitly pass `-AllowGitClone` for fallback `git clone` mode
 - Git Bash for Hermes terminal features
 - Internal PyPI mirror
 - Internal Python standalone mirror for uv
@@ -108,6 +108,10 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
 ```
 
+If the machine already has a pip mirror configured through `PIP_CONFIG_FILE`, `%APPDATA%\pip\pip.ini`, or `%PROGRAMDATA%\pip\pip.ini`, you can omit `-PypiIndexUrl`. The installer converts pip config into process-local `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, and `PIP_INDEX_URL`; `extra-index-url` becomes `UV_INDEX`, `UV_EXTRA_INDEX_URL`, and `PIP_EXTRA_INDEX_URL`. These variables are scoped to the installer process and are not written globally.
+
+Note: pip mirrors only affect Python package downloads. They do not affect uv managed Python downloads. In an offline or proxy-only enterprise environment, also pass `-PythonInstallMirror` or pre-seed Python/uv cache.
+
 If you need npm for optional Node-based features:
 
 ```powershell
@@ -135,11 +139,12 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | `-Root` | Current PowerShell directory | Install root. Leave empty to install into the directory you `cd` into. |
 | `-SourcePath` | Empty | Local Hermes Agent source directory, or a parent folder containing the extracted source directory. Preferred when `git clone` is blocked. |
 | `-SourceZip` | Empty | Local Hermes Agent source zip. The installer extracts it under `runtime\source-extract` and copies the source into `app\hermes-agent`. |
-| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Fallback git repository URL, used only when neither `-SourcePath` nor `-SourceZip` is provided. |
+| `-AllowGitClone` | Off | Explicitly allow fallback `git clone`. Off by default; manual source zip is recommended. |
+| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Fallback git repository URL, used only with `-AllowGitClone` when neither `-SourcePath` nor `-SourceZip` is provided. |
 | `-Branch` | `v2026.5.7` | Fallback branch or tag. `v2026.5.7` corresponds to the v0.13.0-era Windows Native release. |
 | `-PythonVersion` | `3.11` | Python version for the local uv-managed venv. |
 | `-NodeMajorVersion` | `22` | Local managed Node folder name, used only with `-InstallNodeDeps`. |
-| `-PypiIndexUrl` | Empty | Internal PyPI/simple index URL for uv and pip. |
+| `-PypiIndexUrl` | Empty | Internal PyPI/simple index URL for uv and pip. If empty, the installer tries to read local pip config. |
 | `-NpmRegistry` | Empty | Internal npm registry URL. |
 | `-PythonInstallMirror` | Empty | uv Python install mirror. |
 | `-HttpProxy` | Empty | Process-local HTTP proxy used by git, uv, pip and npm during install. |
@@ -211,7 +216,7 @@ The launcher log records resolved paths, Git Bash detection, proxy variable pres
 
 The installer is safe to run again after a failed install. In local source mode, if a previous run left a partial non-source folder at `app\hermes-agent`, the next run moves it to `app\hermes-agent.partial-YYYYMMDD-HHMMSS` and copies the local source again. If a valid Hermes source tree already exists, it is reused.
 
-If you do not pass `-SourcePath` or `-SourceZip`, the installer falls back to git mode. In that mode, a valid git checkout is updated with `fetch`, `checkout`, and submodule sync.
+If you do not pass `-SourcePath` or `-SourceZip`, the installer stops with a manual-source error. It falls back to git mode only when you explicitly pass `-AllowGitClone`. In that mode, a valid git checkout is updated with `fetch`, `checkout`, and submodule sync.
 
 ## Validate The Installer
 
@@ -271,7 +276,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## Notes
 
-- Git is optional. This project does not install Git globally. Use `-SourcePath` or `-SourceZip` when `git clone` is blocked.
+- Git is optional. This project does not install Git globally. The installer does not run `git clone` by default; pass `-AllowGitClone` to opt into git fallback. Use `-SourcePath` or `-SourceZip` when `git clone` is blocked.
 - Git Bash is still recommended for Hermes terminal features. If it is installed in a standard location, the launcher detects it automatically.
 - In fallback git mode, the installer sets Git's `windows.appendAtomically=false` via process-local environment variables to avoid Windows lock-file issues without running `git config --global`.
 - Node is intentionally opt-in. Pass `-InstallNodeDeps` and `-NodeZip` when you need Node-based features.

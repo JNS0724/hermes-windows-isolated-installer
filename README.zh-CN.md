@@ -47,7 +47,7 @@
 
 可选：
 
-- Git for Windows，仅当你希望安装器走兜底 `git clone` 模式时需要
+- Git for Windows，仅当你显式传 `-AllowGitClone` 走兜底 `git clone` 模式时需要
 - Git Bash，Hermes terminal 功能建议安装
 - 企业内网 PyPI 镜像
 - uv Python standalone 内网镜像
@@ -108,6 +108,10 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
 ```
 
+如果本机已经配置了 pip 镜像，例如 `PIP_CONFIG_FILE`、`%APPDATA%\pip\pip.ini` 或 `%PROGRAMDATA%\pip\pip.ini` 里有 `index-url`，可以不传 `-PypiIndexUrl`。安装器会把 pip 配置自动转换成当前进程的 `UV_DEFAULT_INDEX`、`UV_INDEX_URL`、`PIP_INDEX_URL`；`extra-index-url` 会转换成 `UV_INDEX`、`UV_EXTRA_INDEX_URL`、`PIP_EXTRA_INDEX_URL`。这些变量只在安装器进程内生效，不写入全局环境。
+
+注意：pip 镜像只影响 Python 包依赖下载，不影响 uv 下载托管 Python 解释器。如果企业环境不能访问外网，还需要传 `-PythonInstallMirror`，或提前准备可用的 Python/uv 缓存。
+
 如果需要 npm 支持可选 Node 功能：
 
 ```powershell
@@ -135,11 +139,12 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | `-Root` | 当前 PowerShell 目录 | 安装根目录。留空时安装到你 `cd` 进入的目录。 |
 | `-SourcePath` | 空 | 本地 Hermes Agent 源码目录，也可以是包含解压后源码目录的上级目录。`git clone` 被拦截时推荐使用。 |
 | `-SourceZip` | 空 | 本地 Hermes Agent 源码 zip。安装器会解压到 `runtime\source-extract`，再把源码复制到 `app\hermes-agent`。 |
-| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | 兜底 git 仓库地址。只有未传 `-SourcePath` 和 `-SourceZip` 时才使用。 |
+| `-AllowGitClone` | 关闭 | 显式允许安装器使用 git clone 兜底。默认关闭，推荐手动下载源码 zip。 |
+| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | 兜底 git 仓库地址。只有传 `-AllowGitClone` 且未传 `-SourcePath` / `-SourceZip` 时才使用。 |
 | `-Branch` | `v2026.5.7` | 兜底 git 分支或 tag。`v2026.5.7` 对应 v0.13.0 附近的 Windows Native 版本。 |
 | `-PythonVersion` | `3.11` | 本地 uv 虚拟环境使用的 Python 版本。 |
 | `-NodeMajorVersion` | `22` | 本地托管 Node 目录名，仅在 `-InstallNodeDeps` 时使用。 |
-| `-PypiIndexUrl` | 空 | uv 和 pip 使用的 PyPI/simple 镜像地址。 |
+| `-PypiIndexUrl` | 空 | uv 和 pip 使用的 PyPI/simple 镜像地址。留空时会尝试读取本机 pip 配置。 |
 | `-NpmRegistry` | 空 | npm registry 地址。 |
 | `-PythonInstallMirror` | 空 | uv Python 安装镜像地址。 |
 | `-HttpProxy` | 空 | 安装阶段供 git、uv、pip、npm 使用的进程级 HTTP 代理。 |
@@ -211,7 +216,7 @@ home\logs\launcher-YYYYMMDD.log
 
 安装器可以在失败后重新运行。在本地源码模式下，如果上一次运行在 `app\hermes-agent` 留下了残缺的非源码目录，下一次运行会把它移动到 `app\hermes-agent.partial-YYYYMMDD-HHMMSS`，然后重新复制本地源码。如果已经存在有效 Hermes 源码树，则会复用它。
 
-如果没有传 `-SourcePath` 或 `-SourceZip`，安装器会回退到 git 模式。该模式下已有有效 git checkout 时，会执行 `fetch`、`checkout` 和 submodule 同步。
+如果没有传 `-SourcePath` 或 `-SourceZip`，安装器会直接停止并提示手动下载源码。只有显式传 `-AllowGitClone` 时，才会回退到 git 模式。该模式下已有有效 git checkout 时，会执行 `fetch`、`checkout` 和 submodule 同步。
 
 ## 验证安装器
 
@@ -271,7 +276,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## 说明
 
-- Git 是可选项。本项目不会全局安装 Git。`git clone` 被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
+- Git 是可选项。本项目不会全局安装 Git。默认不执行 `git clone`；只有传 `-AllowGitClone` 才会使用 git 兜底。`git clone` 被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
 - Git Bash 仍建议安装，用于 Hermes terminal 功能。安装在常见路径时，启动器会自动探测。
 - 在兜底 git 模式下，安装器会通过进程级环境变量设置 Git 的 `windows.appendAtomically=false`，用于规避 Windows lock 文件问题，但不会运行 `git config --global`。
 - Node 是可选项。只有需要 Node 相关功能时，才传 `-InstallNodeDeps` 和 `-NodeZip`。
