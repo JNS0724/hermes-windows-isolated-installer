@@ -16,7 +16,7 @@
 - 不依赖系统 Node
 - 不运行 `winget`、`choco` 或 `scoop`
 - 不运行 `git config --global`
-- 允许访问 GitHub 拉取源码，但运行时依赖保持隔离
+- 允许用户手动从 GitHub 下载源码，但运行时依赖保持隔离
 
 本安装器按这个思路设计。默认情况下，它把运行 PowerShell 命令时所在的当前目录作为安装根目录。
 
@@ -26,7 +26,7 @@
 
 ```text
 <目标目录>\
-  app\hermes-agent\          # Hermes Agent 源码
+  app\hermes-agent\          # Hermes Agent 源码副本
   app\hermes-agent\venv\     # 本地 Python 虚拟环境
   home\                      # 本地 HERMES_HOME
   runtime\                   # 本地托管运行时，可选
@@ -42,12 +42,13 @@
 
 - Windows 10 或 Windows 11
 - PowerShell 5.1+
-- `git` 已在 `PATH` 中可用
 - `uv` 已在 `PATH` 中可用，或通过 `-UvExe` 指定
-- 可以访问 `https://github.com/NousResearch/hermes-agent.git`
+- 已从 GitHub 下载 Hermes Agent 源码 zip，或已经解压好的 Hermes Agent 源码目录
 
 可选：
 
+- Git for Windows，仅当你希望安装器走兜底 `git clone` 模式时需要
+- Git Bash，Hermes terminal 功能建议安装
 - 企业内网 PyPI 镜像
 - uv Python standalone 内网镜像
 - 企业内网 npm registry
@@ -55,19 +56,33 @@
 
 ## 快速开始
 
-先创建或选择一个安装目录，然后从这个目录里运行安装脚本：
+先手动下载 Hermes Agent 源码，避免在受管控桌面上触发 `git clone` 问题。
+
+1. 用浏览器打开 [NousResearch/hermes-agent v2026.5.7](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.5.7)。
+2. 下载源码 zip，也可以直接下载 [v2026.5.7.zip](https://github.com/NousResearch/hermes-agent/archive/refs/tags/v2026.5.7.zip)。
+3. 可以保留 zip 原样，也可以先解压到本地目录。
+
+然后创建或选择一个安装目录，从这个目录里运行安装脚本：
 
 ```powershell
 mkdir D:\tools\hermes
 cd D:\tools\hermes
 
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
+```
+
+如果已经解压了 zip，传解压后的源码目录：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
 如果 PowerShell 提示脚本未进行数字签名、无法运行，可以改用 CMD 包装入口：
 
 ```cmd
-C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 ```
 
 这个 CMD 包装入口只会用当前进程级的 `-ExecutionPolicy Bypass` 启动 PowerShell，不会修改系统策略。如果企业通过组策略强制 `AllSigned`，则需要使用企业代码签名证书给 `.ps1` 文件签名；这种组策略不能靠包装脚本绕过。
@@ -88,6 +103,7 @@ C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd
 cd D:\tools\hermes
 
 powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
   -PypiIndexUrl https://pypi.corp/simple `
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
 ```
@@ -96,6 +112,7 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
   -NpmRegistry https://npm.corp/repository/npm/ `
   -InstallNodeDeps `
   -NodeZip C:\artifacts\node-v22.x.x-win-x64.zip
@@ -116,8 +133,10 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `-Root` | 当前 PowerShell 目录 | 安装根目录。留空时安装到你 `cd` 进入的目录。 |
-| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Hermes Agent 仓库地址。 |
-| `-Branch` | `v2026.5.7` | Hermes Agent 分支或 tag。`v2026.5.7` 对应 v0.13.0 附近的 Windows Native 版本。 |
+| `-SourcePath` | 空 | 本地 Hermes Agent 源码目录，也可以是包含解压后源码目录的上级目录。`git clone` 被拦截时推荐使用。 |
+| `-SourceZip` | 空 | 本地 Hermes Agent 源码 zip。安装器会解压到 `runtime\source-extract`，再把源码复制到 `app\hermes-agent`。 |
+| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | 兜底 git 仓库地址。只有未传 `-SourcePath` 和 `-SourceZip` 时才使用。 |
+| `-Branch` | `v2026.5.7` | 兜底 git 分支或 tag。`v2026.5.7` 对应 v0.13.0 附近的 Windows Native 版本。 |
 | `-PythonVersion` | `3.11` | 本地 uv 虚拟环境使用的 Python 版本。 |
 | `-NodeMajorVersion` | `22` | 本地托管 Node 目录名，仅在 `-InstallNodeDeps` 时使用。 |
 | `-PypiIndexUrl` | 空 | uv 和 pip 使用的 PyPI/simple 镜像地址。 |
@@ -190,14 +209,16 @@ home\logs\launcher-YYYYMMDD.log
 
 ## 重新运行
 
-安装器可以在失败后重新运行。如果 `git clone` 失败后留下了一个残缺的非 git checkout 目录，下一次运行会把它移动到 `app\hermes-agent.partial-YYYYMMDD-HHMMSS`，然后重新 clone。如果已经存在有效 git checkout，则会走 `fetch`、`checkout` 和 submodule 同步。
+安装器可以在失败后重新运行。在本地源码模式下，如果上一次运行在 `app\hermes-agent` 留下了残缺的非源码目录，下一次运行会把它移动到 `app\hermes-agent.partial-YYYYMMDD-HHMMSS`，然后重新复制本地源码。如果已经存在有效 Hermes 源码树，则会复用它。
+
+如果没有传 `-SourcePath` 或 `-SourceZip`，安装器会回退到 git 模式。该模式下已有有效 git checkout 时，会执行 `fetch`、`checkout` 和 submodule 同步。
 
 ## 验证安装器
 
 先做 dry run：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 -DryRun -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 ```
 
 运行本地沙箱测试：
@@ -206,14 +227,15 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 -DryRun
 powershell -ExecutionPolicy Bypass -File .\scripts\test-install-hermes-corp-sandbox.ps1
 ```
 
-沙箱测试会使用 fake `git` 和 fake `uv`，用于验证安装流程，不访问网络，也不下载依赖。
+沙箱测试会使用 fake 本地源码树和 fake `uv`，用于验证安装流程，不执行 `git clone`，不访问网络，也不下载依赖。
 
 给终端用户使用前，建议至少在干净 Windows VM 里跑一次真实安装：
 
 ```powershell
 mkdir D:\hermes-test
 cd D:\hermes-test
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 .\bin\hermes-corp.ps1 --version
 .\bin\hermes-corp.ps1 doctor
 ```
@@ -249,7 +271,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## 说明
 
-- Git 被视为前置依赖。本项目不会全局安装 Git。
-- 安装器会通过进程级环境变量设置 Git 的 `windows.appendAtomically=false`，用于规避 Windows lock 文件问题，但不会运行 `git config --global`。
+- Git 是可选项。本项目不会全局安装 Git。`git clone` 被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
+- Git Bash 仍建议安装，用于 Hermes terminal 功能。安装在常见路径时，启动器会自动探测。
+- 在兜底 git 模式下，安装器会通过进程级环境变量设置 Git 的 `windows.appendAtomically=false`，用于规避 Windows lock 文件问题，但不会运行 `git config --global`。
 - Node 是可选项。只有需要 Node 相关功能时，才传 `-InstallNodeDeps` 和 `-NodeZip`。
 - 本项目不是 Hermes Agent 官方项目。

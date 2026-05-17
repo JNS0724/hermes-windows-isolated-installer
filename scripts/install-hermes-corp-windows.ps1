@@ -3,9 +3,10 @@
 Install Hermes Agent on native Windows without mutating global environment.
 
 .DESCRIPTION
-This installer is intended for enterprise Windows desktops where GitHub access
-is allowed for the hermes-agent source repository, while Python, Node, npm and
-runtime environment changes must stay isolated under a single root directory.
+This installer is intended for enterprise Windows desktops where users can
+download the hermes-agent source from GitHub manually, while Python, Node, npm
+and runtime environment changes must stay isolated under a single root
+directory.
 
 It deliberately does not:
 - write User or Machine PATH
@@ -15,7 +16,8 @@ It deliberately does not:
 - install packages into the system Python or global npm prefix
 
 It does:
-- clone/update hermes-agent from GitHub
+- prepare hermes-agent from a local source directory or source zip
+- optionally clone/update hermes-agent from GitHub when no local source is given
 - create a local uv-managed Python 3.11 virtual environment
 - optionally use a local/managed Node runtime for Node-based dependencies
 - create a hermes-corp.ps1 launcher that sets process-local env vars
@@ -34,6 +36,12 @@ Enterprise mirrors:
   -HttpsProxy http://proxy.corp.local:8080
   -NoProxy .corp.local,10.0.0.0/8,localhost,127.0.0.1
 
+Manual source install:
+  Download Hermes Agent source zip from GitHub, extract it locally, then pass:
+  -SourcePath C:\path\to\hermes-agent-source
+  Or pass the downloaded zip directly:
+  -SourceZip C:\path\to\hermes-agent-v2026.5.7.zip
+
 Diagnostics:
   Installer logs are written to <root>\logs by default.
   Runtime launcher logs are written to <root>\home\logs.
@@ -46,6 +54,8 @@ node.exe under the runtime paths or pass -UvExe/-NodeZip.
 [CmdletBinding()]
 param(
     [string]$Root = "",
+    [string]$SourcePath = "",
+    [string]$SourceZip = "",
     [string]$RepoUrl = "https://github.com/NousResearch/hermes-agent.git",
     [string]$Branch = "v2026.5.7",
     [string]$PythonVersion = "3.11",
@@ -414,7 +424,7 @@ function Ensure-Uv {
 function Ensure-Git {
     $found = Find-Executable -Name "git"
     if (-not $found) {
-        throw "git.exe not found on PATH. GitHub access is allowed, but this installer will not install Git globally."
+        throw "git.exe not found on PATH. Pass -SourcePath or -SourceZip for manual source install, or install Git separately. This installer will not install Git globally."
     }
     $script:GitCmd = $found
     Write-Ok "git: $(& $script:GitCmd --version)"
@@ -423,23 +433,25 @@ function Ensure-Git {
 function Find-GitBash {
     $candidates = New-Object System.Collections.Generic.List[string]
 
-    try {
-        $gitRoot = & $script:GitCmd -c windows.appendAtomically=false rev-parse --path-format=absolute --git-path "..\.." 2>$null
-        if ($gitRoot) {
-            $gitRoot = Resolve-FullPath $gitRoot
-            $candidates.Add((Join-Path $gitRoot "bin\bash.exe"))
-            $candidates.Add((Join-Path $gitRoot "usr\bin\bash.exe"))
+    if ($script:GitCmd) {
+        try {
+            $gitRoot = & $script:GitCmd -c windows.appendAtomically=false rev-parse --path-format=absolute --git-path "..\.." 2>$null
+            if ($gitRoot) {
+                $gitRoot = Resolve-FullPath $gitRoot
+                $candidates.Add((Join-Path $gitRoot "bin\bash.exe"))
+                $candidates.Add((Join-Path $gitRoot "usr\bin\bash.exe"))
+            }
+        } catch {
+            # Ignore and fall back to common locations.
         }
-    } catch {
-        # Ignore and fall back to common locations.
-    }
 
-    $gitExeDir = Split-Path $script:GitCmd -Parent
-    if ($gitExeDir) {
-        $maybeRoot = Split-Path $gitExeDir -Parent
-        if ($maybeRoot) {
-            $candidates.Add((Join-Path $maybeRoot "bin\bash.exe"))
-            $candidates.Add((Join-Path $maybeRoot "usr\bin\bash.exe"))
+        $gitExeDir = Split-Path $script:GitCmd -Parent
+        if ($gitExeDir) {
+            $maybeRoot = Split-Path $gitExeDir -Parent
+            if ($maybeRoot) {
+                $candidates.Add((Join-Path $maybeRoot "bin\bash.exe"))
+                $candidates.Add((Join-Path $maybeRoot "usr\bin\bash.exe"))
+            }
         }
     }
 
@@ -472,13 +484,157 @@ function Move-PartialInstallDirAside {
     }
     [void](Assert-UnderRoot $archiveDir "partial InstallDir archive")
 
-    Write-Warn "InstallDir exists but is not a valid git repo. Moving it aside for retry:"
+    Write-Warn "InstallDir exists but is not a reusable Hermes source tree. Moving it aside for retry:"
     Write-Warn "  from: $safeInstallDir"
     Write-Warn "  to:   $archiveDir"
     Rename-Item -LiteralPath $safeInstallDir -NewName (Split-Path $archiveDir -Leaf) -Force
 }
 
+function Test-LocalSourceRequested {
+    return [bool]($SourcePath.Trim() -or $SourceZip.Trim())
+}
+
+function Test-HermesSourceDir {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
+        return $false
+    }
+
+    $pyproject = Join-Path $Path "pyproject.toml"
+    if (-not (Test-Path -LiteralPath $pyproject -PathType Leaf)) {
+        return $false
+    }
+
+    if (Test-Path -LiteralPath (Join-Path $Path "hermes_cli") -PathType Container) {
+        return $true
+    }
+
+    if (Test-Path -LiteralPath (Join-Path $Path "agent") -PathType Container) {
+        return $true
+    }
+
+    return $false
+}
+
+function Find-HermesSourceDir {
+    param([string]$Root)
+
+    $rootFull = Resolve-FullPath $Root
+    if (Test-HermesSourceDir $rootFull) {
+        return $rootFull
+    }
+
+    $directChildren = @(Get-ChildItem -LiteralPath $rootFull -Directory -Force -ErrorAction SilentlyContinue)
+    foreach ($child in $directChildren) {
+        if (Test-HermesSourceDir $child.FullName) {
+            return $child.FullName
+        }
+    }
+
+    $pyprojects = @(Get-ChildItem -LiteralPath $rootFull -Recurse -Filter "pyproject.toml" -File -ErrorAction SilentlyContinue | Select-Object -First 25)
+    foreach ($pyproject in $pyprojects) {
+        if (Test-HermesSourceDir $pyproject.DirectoryName) {
+            return $pyproject.DirectoryName
+        }
+    }
+
+    return $null
+}
+
+function Resolve-LocalSourceDir {
+    if ($SourcePath.Trim() -and $SourceZip.Trim()) {
+        throw "Pass only one source option: -SourcePath or -SourceZip."
+    }
+
+    if ($SourcePath.Trim()) {
+        $sourceRoot = Resolve-FullPath $SourcePath.Trim()
+        if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
+            throw "SourcePath is not a directory: $sourceRoot"
+        }
+        $sourceDir = Find-HermesSourceDir $sourceRoot
+        if (-not $sourceDir) {
+            throw "SourcePath does not look like a Hermes Agent source tree. Expected pyproject.toml plus hermes_cli or agent under: $sourceRoot"
+        }
+        return $sourceDir
+    }
+
+    if ($SourceZip.Trim()) {
+        $zipPath = Resolve-FullPath $SourceZip.Trim()
+        if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+            throw "SourceZip not found: $zipPath"
+        }
+
+        $extractRoot = Join-Path $script:RuntimeDir "source-extract"
+        if (Test-Path -LiteralPath $extractRoot) {
+            $safeExtract = Assert-UnderRoot $extractRoot "source extract dir"
+            Remove-Item -LiteralPath $safeExtract -Recurse -Force
+        }
+        New-Item -ItemType Directory -Force -Path $extractRoot | Out-Null
+        Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
+
+        $sourceDir = Find-HermesSourceDir $extractRoot
+        if (-not $sourceDir) {
+            throw "SourceZip did not contain a recognizable Hermes Agent source tree: $zipPath"
+        }
+        return $sourceDir
+    }
+
+    return $null
+}
+
+function Copy-HermesSourceTree {
+    param([string]$SourceDir)
+
+    $sourceFull = Resolve-FullPath $SourceDir
+    $installFull = Resolve-FullPath $script:InstallDir
+    if ($sourceFull.TrimEnd('\').ToLowerInvariant() -eq $installFull.TrimEnd('\').ToLowerInvariant()) {
+        Write-Ok "Source already present at $script:InstallDir"
+        return
+    }
+
+    New-Item -ItemType Directory -Force -Path $script:InstallDir | Out-Null
+    $skipNames = @(".git", ".hg", ".svn", ".venv", "venv", "node_modules", "__pycache__", "hermes_agent.egg-info")
+    Get-ChildItem -LiteralPath $sourceFull -Force | Where-Object { $skipNames -notcontains $_.Name } | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $script:InstallDir -Recurse -Force
+    }
+}
+
+function Install-SourceFromLocal {
+    $sourceDir = Resolve-LocalSourceDir
+    Write-Info "Using local Hermes Agent source: $sourceDir"
+
+    if (Test-Path -LiteralPath $script:InstallDir) {
+        if (Test-HermesSourceDir $script:InstallDir) {
+            Write-Ok "Hermes source already exists: $script:InstallDir"
+            return
+        }
+
+        $existing = Get-ChildItem -LiteralPath $script:InstallDir -Force -ErrorAction SilentlyContinue
+        if ($existing) {
+            Move-PartialInstallDirAside
+        }
+    }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path $script:InstallDir -Parent) | Out-Null
+    Copy-HermesSourceTree -SourceDir $sourceDir
+
+    if (-not (Test-HermesSourceDir $script:InstallDir)) {
+        throw "Local source copy did not produce a valid Hermes Agent source tree at $script:InstallDir"
+    }
+    Write-Ok "Hermes source ready at $script:InstallDir"
+}
+
 function Update-Repository {
+    if (Test-LocalSourceRequested) {
+        Install-SourceFromLocal
+        return
+    }
+
+    if (-not $script:GitCmd) {
+        throw "git.exe is required when neither -SourcePath nor -SourceZip is provided."
+    }
+
     $repoValid = $false
     if (Test-Path -LiteralPath (Join-Path $script:InstallDir ".git")) {
         Push-Location $script:InstallDir
@@ -991,22 +1147,44 @@ function Test-Install {
 function Main {
     Initialize-Paths
     Start-InstallLog
+    $localSourceMode = Test-LocalSourceRequested
 
     Write-Host ""
     Write-Host "Hermes Agent native Windows isolated installer" -ForegroundColor Magenta
     Write-Host "Root:       $script:RootPath"
-    Write-Host "Repo:       $RepoUrl"
-    Write-Host "Branch/tag: $Branch"
+    if ($localSourceMode) {
+        Write-Host "Source:     local"
+        if ($SourcePath.Trim()) {
+            Write-Host "SourcePath: $($SourcePath.Trim())"
+        }
+        if ($SourceZip.Trim()) {
+            Write-Host "SourceZip:  $($SourceZip.Trim())"
+        }
+    } else {
+        Write-Host "Repo:       $RepoUrl"
+        Write-Host "Branch/tag: $Branch"
+    }
     Write-Host "Log:        $script:LogPath"
     Write-Host "Transcript: $script:TranscriptPath"
     Write-Host ""
+    Write-LogLine -Level "INFO" -Message ("LocalSourceMode={0}" -f $localSourceMode)
+    if ($SourcePath.Trim()) {
+        Write-LogLine -Level "INFO" -Message ("SourcePath={0}" -f (Resolve-FullPath $SourcePath.Trim()))
+    }
+    if ($SourceZip.Trim()) {
+        Write-LogLine -Level "INFO" -Message ("SourceZip={0}" -f (Resolve-FullPath $SourceZip.Trim()))
+    }
 
     Invoke-Step "Creating local directory layout" { New-DirectoryLayout }
     Invoke-Step "Setting process-local environment" { Set-ProcessOnlyEnvironment }
     Invoke-Step "Writing diagnostic environment snapshot" { Write-EnvironmentDiagnostics }
     Invoke-Step "Checking uv" { Ensure-Uv }
-    Invoke-Step "Checking git" { Ensure-Git; Find-GitBash }
-    Invoke-Step "Cloning/updating hermes-agent" { Update-Repository }
+    if ($localSourceMode) {
+        Invoke-Step "Checking Git Bash for terminal support (optional)" { Find-GitBash }
+    } else {
+        Invoke-Step "Checking git" { Ensure-Git; Find-GitBash }
+    }
+    Invoke-Step "Preparing hermes-agent source tree" { Update-Repository }
     Invoke-Step "Creating isolated Python virtual environment" { Ensure-Venv }
     Invoke-Step "Installing Python dependencies into local venv" { Install-PythonDependencies }
     Invoke-Step "Installing optional Node dependencies" { Install-NodeDependencies }

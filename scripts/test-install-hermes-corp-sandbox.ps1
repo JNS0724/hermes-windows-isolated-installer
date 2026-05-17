@@ -3,10 +3,10 @@
 Sandbox validation for install-hermes-corp-windows.ps1.
 
 .DESCRIPTION
-Creates a disposable local fake hermes-agent git repository and fake uv command,
-then runs the installer from a sandbox working directory without -Root. This
-verifies the default "current directory is install root" behavior without
-network access or global environment writes.
+Creates a disposable local fake hermes-agent source tree, source zip, and fake
+uv command, then runs the installer from sandbox working directories without
+-Root. This verifies the default "current directory is install root" behavior
+without git clone, network access, or global environment writes.
 #>
 
 [CmdletBinding()]
@@ -122,10 +122,10 @@ if (-not $SandboxName.Trim()) {
 $installer = Join-Path $repoRoot "scripts\install-hermes-corp-windows.ps1"
 $sandboxRoot = Join-Path $repoRoot ".sandbox\$SandboxName"
 $sourceRepo = Join-Path $sandboxRoot "source\hermes-agent-fake"
+$sourceZip = Join-Path $sandboxRoot "source\hermes-agent-fake.zip"
 $installRoot = Join-Path $sandboxRoot "target"
+$zipInstallRoot = Join-Path $sandboxRoot "target-zip"
 $fakeUv = Join-Path $sandboxRoot "tools\uv.cmd"
-$fakeGit = Join-Path $sandboxRoot "tools\git.cmd"
-$fakeGitPs1 = Join-Path $sandboxRoot "tools\fake-git.ps1"
 
 Assert-File $installer
 Assert-UnderPath -Candidate $sandboxRoot -Root (Join-Path $repoRoot ".sandbox") -Label "sandbox root"
@@ -149,7 +149,7 @@ try {
     if (Test-Path -LiteralPath $sandboxRoot) {
         Remove-SandboxTree -Path $sandboxRoot
     }
-    New-Item -ItemType Directory -Force -Path $sourceRepo, $installRoot, (Split-Path $fakeUv -Parent) | Out-Null
+    New-Item -ItemType Directory -Force -Path $sourceRepo, $installRoot, $zipInstallRoot, (Split-Path $fakeUv -Parent) | Out-Null
 
     Write-Step "Creating fake uv command"
     Write-TextNoBom -Path $fakeUv -Content @'
@@ -173,102 +173,28 @@ echo unsupported fake uv command: %*
 exit /b 1
 '@
 
-    Write-Step "Creating fake git command"
-    Write-TextNoBom -Path $fakeGit -Content @'
-@echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0fake-git.ps1" %*
-exit /b %ERRORLEVEL%
-'@
-    Write-TextNoBom -Path $fakeGitPs1 -Content @'
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$GitArgs
-)
-
-$ErrorActionPreference = "Stop"
-
-while ($GitArgs.Count -ge 2 -and $GitArgs[0] -eq "-c") {
-    $GitArgs = @($GitArgs[2..($GitArgs.Count - 1)])
-}
-
-if ($GitArgs.Count -eq 0) {
-    exit 0
-}
-
-switch ($GitArgs[0]) {
-    "--version" {
-        Write-Output "git version 0.0.0-sandbox"
-        exit 0
-    }
-    "clone" {
-        $remaining = New-Object System.Collections.Generic.List[string]
-        for ($i = 1; $i -lt $GitArgs.Count; $i++) {
-            $arg = $GitArgs[$i]
-            if ($arg -eq "--branch") {
-                $i++
-                continue
-            }
-            if ($arg -eq "--recurse-submodules") {
-                continue
-            }
-            $remaining.Add($arg)
-        }
-        if ($remaining.Count -lt 2) {
-            Write-Error "fake git clone expected source and destination"
-            exit 2
-        }
-        $src = $remaining[$remaining.Count - 2]
-        $dst = $remaining[$remaining.Count - 1]
-        New-Item -ItemType Directory -Force -Path $dst | Out-Null
-        Copy-Item -Path (Join-Path $src "*") -Destination $dst -Recurse -Force
-        New-Item -ItemType Directory -Force -Path (Join-Path $dst ".git") | Out-Null
-        Write-Output "fake clone $src -> $dst"
-        exit 0
-    }
-    "rev-parse" {
-        if ($GitArgs -contains "--is-inside-work-tree") {
-            if (Test-Path -LiteralPath (Join-Path (Get-Location).ProviderPath ".git")) {
-                Write-Output "true"
-                exit 0
-            }
-            exit 1
-        }
-        exit 1
-    }
-    "status" { exit 0 }
-    "config" { exit 0 }
-    "submodule" { exit 0 }
-    "remote" { exit 0 }
-    "fetch" { exit 0 }
-    "checkout" { exit 0 }
-    "pull" { exit 0 }
-    default {
-        Write-Output "fake git ignored: $($GitArgs -join ' ')"
-        exit 0
-    }
-}
-'@
-
     Write-Step "Creating local fake hermes-agent source tree"
     Write-TextNoBom -Path (Join-Path $sourceRepo "README.md") -Content "# fake hermes-agent`r`n"
+    Write-TextNoBom -Path (Join-Path $sourceRepo "hermes_cli\__init__.py") -Content ""
     Write-TextNoBom -Path (Join-Path $sourceRepo "pyproject.toml") -Content @'
 [project]
 name = "hermes-agent"
 version = "0.0.0"
 '@
 
-    Write-Step "Creating a stale partial checkout to verify re-run repair"
+    Write-Step "Creating local fake hermes-agent source zip"
+    Compress-Archive -Path (Join-Path $sourceRepo "*") -DestinationPath $sourceZip -Force
+
+    Write-Step "Creating a stale partial source directory to verify re-run repair"
     $partialInstallDir = Join-Path $installRoot "app\hermes-agent"
     New-Item -ItemType Directory -Force -Path $partialInstallDir | Out-Null
     Write-TextNoBom -Path (Join-Path $partialInstallDir "stale-clone-marker.txt") -Content "partial clone`r`n"
 
     Write-Step "Running installer from sandbox target without -Root"
-    $env:PATH = "$(Split-Path $fakeGit -Parent);$env:PATH"
     Push-Location $installRoot
     try {
         & $installer `
-            -RepoUrl $sourceRepo `
-            -Branch "v2026.5.7" `
+            -SourcePath $sourceRepo `
             -UvExe $fakeUv `
             -SkipDependencyInstall
     } finally {
@@ -282,14 +208,15 @@ version = "0.0.0"
     $envFile = Join-Path $installRoot "home\.env"
     $launcher = Join-Path $installRoot "bin\hermes-corp.ps1"
 
-    Assert-File (Join-Path $installedRepo ".git")
+    Assert-File (Join-Path $installedRepo "pyproject.toml")
+    Assert-File (Join-Path $installedRepo "hermes_cli\__init__.py")
     Assert-File $venvHermes
     Assert-File $config
     Assert-File $envFile
     Assert-File $launcher
 
     $partialArchives = @(Get-ChildItem -LiteralPath (Join-Path $installRoot "app") -Directory -Filter "hermes-agent.partial-*" -ErrorAction SilentlyContinue)
-    Assert-True ($partialArchives.Count -eq 1) "Expected stale partial checkout to be moved aside once"
+    Assert-True ($partialArchives.Count -eq 1) "Expected stale partial source directory to be moved aside once"
     Assert-File (Join-Path $partialArchives[0].FullName "stale-clone-marker.txt")
 
     $configText = Get-Content -LiteralPath $config -Raw
@@ -302,6 +229,22 @@ version = "0.0.0"
     Write-Step "Running generated launcher"
     & powershell -NoProfile -ExecutionPolicy Bypass -File $launcher --version | Out-Host
     Assert-True ($LASTEXITCODE -eq 0) "generated launcher failed"
+
+    Write-Step "Running installer with -SourceZip"
+    Push-Location $zipInstallRoot
+    try {
+        & $installer `
+            -SourceZip $sourceZip `
+            -UvExe $fakeUv `
+            -SkipDependencyInstall
+    } finally {
+        Pop-Location
+    }
+
+    $zipInstalledRepo = Join-Path $zipInstallRoot "app\hermes-agent"
+    Assert-File (Join-Path $zipInstalledRepo "pyproject.toml")
+    Assert-File (Join-Path $zipInstalledRepo "hermes_cli\__init__.py")
+    Assert-File (Join-Path $zipInstalledRepo "venv\Scripts\hermes.exe")
 
     Write-Step "Checking global environment was not changed"
     $afterUserPath = [Environment]::GetEnvironmentVariable("Path", "User")

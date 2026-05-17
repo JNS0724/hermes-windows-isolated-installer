@@ -16,7 +16,7 @@ The upstream Hermes Windows installer is useful, but enterprise desktops often n
 - Do not rely on system Node
 - Do not run `winget`, `choco`, or `scoop`
 - Do not run `git config --global`
-- Allow GitHub source access while keeping runtime dependencies isolated
+- Allow manual GitHub source downloads while keeping runtime dependencies isolated
 
 This installer follows that model. It uses the current PowerShell directory as the install root by default.
 
@@ -26,7 +26,7 @@ By default, running the installer from a target folder creates:
 
 ```text
 <target-root>\
-  app\hermes-agent\          # Hermes Agent source checkout
+  app\hermes-agent\          # Hermes Agent source copy
   app\hermes-agent\venv\     # Local Python virtual environment
   home\                      # Local HERMES_HOME
   runtime\                   # Local managed runtimes, if provided
@@ -42,12 +42,13 @@ Required:
 
 - Windows 10 or Windows 11
 - PowerShell 5.1+
-- Git available on `PATH`
 - uv available on `PATH`, or passed with `-UvExe`
-- Network access to `https://github.com/NousResearch/hermes-agent.git`
+- Hermes Agent source zip downloaded from GitHub, or an extracted Hermes Agent source directory
 
 Optional:
 
+- Git for Windows, only if you want the installer to use the fallback `git clone` mode
+- Git Bash for Hermes terminal features
 - Internal PyPI mirror
 - Internal Python standalone mirror for uv
 - Internal npm registry
@@ -55,19 +56,33 @@ Optional:
 
 ## Quick Start
 
-Create or choose an install folder, then run the installer from that folder:
+Download Hermes Agent source manually first. This avoids `git clone` failures on managed desktops.
+
+1. Open [NousResearch/hermes-agent v2026.5.7](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.5.7) in a browser.
+2. Download the source zip, or use the direct archive URL: [v2026.5.7.zip](https://github.com/NousResearch/hermes-agent/archive/refs/tags/v2026.5.7.zip).
+3. Keep the zip as-is, or extract it to a local folder.
+
+Then create or choose an install folder and run the installer from that folder:
 
 ```powershell
 mkdir D:\tools\hermes
 cd D:\tools\hermes
 
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
+```
+
+If you already extracted the zip, pass the extracted source folder instead:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
 If PowerShell reports that the script is not digitally signed, use the CMD wrapper instead:
 
 ```cmd
-C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd
+C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 ```
 
 The CMD wrapper starts PowerShell with process-local `-ExecutionPolicy Bypass` and does not change system policy. If your enterprise enforces `AllSigned` through Group Policy, use your enterprise code-signing certificate to sign the `.ps1` files instead; Group Policy cannot be overridden by this wrapper.
@@ -88,6 +103,7 @@ If your environment uses internal package mirrors:
 cd D:\tools\hermes
 
 powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
   -PypiIndexUrl https://pypi.corp/simple `
   -PythonInstallMirror https://artifacts.corp/astral/python-build-standalone
 ```
@@ -96,6 +112,7 @@ If you need npm for optional Node-based features:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
   -NpmRegistry https://npm.corp/repository/npm/ `
   -InstallNodeDeps `
   -NodeZip C:\artifacts\node-v22.x.x-win-x64.zip
@@ -116,8 +133,10 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `-Root` | Current PowerShell directory | Install root. Leave empty to install into the directory you `cd` into. |
-| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Hermes Agent repository URL. |
-| `-Branch` | `v2026.5.7` | Hermes Agent branch or tag. `v2026.5.7` corresponds to the v0.13.0-era Windows Native release. |
+| `-SourcePath` | Empty | Local Hermes Agent source directory, or a parent folder containing the extracted source directory. Preferred when `git clone` is blocked. |
+| `-SourceZip` | Empty | Local Hermes Agent source zip. The installer extracts it under `runtime\source-extract` and copies the source into `app\hermes-agent`. |
+| `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Fallback git repository URL, used only when neither `-SourcePath` nor `-SourceZip` is provided. |
+| `-Branch` | `v2026.5.7` | Fallback branch or tag. `v2026.5.7` corresponds to the v0.13.0-era Windows Native release. |
 | `-PythonVersion` | `3.11` | Python version for the local uv-managed venv. |
 | `-NodeMajorVersion` | `22` | Local managed Node folder name, used only with `-InstallNodeDeps`. |
 | `-PypiIndexUrl` | Empty | Internal PyPI/simple index URL for uv and pip. |
@@ -190,14 +209,16 @@ The launcher log records resolved paths, Git Bash detection, proxy variable pres
 
 ## Re-running
 
-The installer is safe to run again after a failed install. If `git clone` failed after creating a partial non-repository checkout, the next run moves that partial folder to `app\hermes-agent.partial-YYYYMMDD-HHMMSS` and retries a fresh clone. If a valid git checkout already exists, the installer updates it with `fetch`, `checkout`, and submodule sync.
+The installer is safe to run again after a failed install. In local source mode, if a previous run left a partial non-source folder at `app\hermes-agent`, the next run moves it to `app\hermes-agent.partial-YYYYMMDD-HHMMSS` and copies the local source again. If a valid Hermes source tree already exists, it is reused.
+
+If you do not pass `-SourcePath` or `-SourceZip`, the installer falls back to git mode. In that mode, a valid git checkout is updated with `fetch`, `checkout`, and submodule sync.
 
 ## Validate The Installer
 
 Run a dry run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 -DryRun
+powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 -DryRun -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 ```
 
 Run the local sandbox test:
@@ -206,14 +227,15 @@ Run the local sandbox test:
 powershell -ExecutionPolicy Bypass -File .\scripts\test-install-hermes-corp-sandbox.ps1
 ```
 
-The sandbox test uses fake `git` and fake `uv` commands to validate installer flow without network access or dependency downloads.
+The sandbox test uses a fake local source tree and fake `uv` command to validate installer flow without git clone, network access, or dependency downloads.
 
 Before giving this to end users, also run at least one real install test on a clean Windows VM:
 
 ```powershell
 mkdir D:\hermes-test
 cd D:\hermes-test
-powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip
 .\bin\hermes-corp.ps1 --version
 .\bin\hermes-corp.ps1 doctor
 ```
@@ -249,7 +271,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## Notes
 
-- Git is intentionally treated as a prerequisite. This project does not install Git globally.
-- The installer sets Git's `windows.appendAtomically=false` via process-local environment variables to avoid Windows lock-file issues without running `git config --global`.
+- Git is optional. This project does not install Git globally. Use `-SourcePath` or `-SourceZip` when `git clone` is blocked.
+- Git Bash is still recommended for Hermes terminal features. If it is installed in a standard location, the launcher detects it automatically.
+- In fallback git mode, the installer sets Git's `windows.appendAtomically=false` via process-local environment variables to avoid Windows lock-file issues without running `git config --global`.
 - Node is intentionally opt-in. Pass `-InstallNodeDeps` and `-NodeZip` when you need Node-based features.
 - This project is not an official Hermes Agent project.
