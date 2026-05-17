@@ -79,6 +79,16 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
   -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
+If cloning the full `hermes-agent.git` repository is slow, keep the main Hermes source as a zip and clone only source submodules when the zip contains `.gitmodules`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
+  -AllowGitClone `
+  -CloneSourceSubmodules `
+  -UseGitBashForGit
+```
+
 If PowerShell reports that the script is not digitally signed, use the CMD wrapper instead:
 
 ```cmd
@@ -143,6 +153,7 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | `-SourceZip` | Empty | Local Hermes Agent source zip. The installer extracts it under `runtime\source-extract` and copies the source into `app\hermes-agent`. |
 | `-AllowGitClone` | Off | Explicitly allow fallback `git clone`. Off by default; manual source zip is recommended. |
 | `-UseGitBashForGit` | Off | Run fallback git operations through Git Bash. Use this when manual `git clone` works in Git Bash but fails from PowerShell. |
+| `-CloneSourceSubmodules` | Off | With `-SourcePath` or `-SourceZip`, clone/update submodules listed in `.gitmodules`. Requires `-AllowGitClone`; useful when the main Hermes source comes from zip but smaller submodules may use git. |
 | `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | Fallback git repository URL, used only with `-AllowGitClone` when neither `-SourcePath` nor `-SourceZip` is provided. |
 | `-Branch` | `v2026.5.7` | Fallback branch or tag. `v2026.5.7` corresponds to the v0.13.0-era Windows Native release. |
 | `-PythonVersion` | `3.11` | Python version for the local uv-managed venv. |
@@ -231,6 +242,8 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 `
 
 This runs `git clone`, `fetch`, `checkout`, `pull`, and `submodule update` through Git Bash without writing global Git config.
 
+For the recommended zip workflow, `-SourceZip` and `-SourcePath` always take precedence over cloning the main Hermes repository. Add `-CloneSourceSubmodules` only when the copied source has a `.gitmodules` file and those submodule files are required. Because a source archive does not preserve the superproject git index, empty submodule paths are cloned from the `.gitmodules` URL and branch/default HEAD; use a full git checkout when exact pinned submodule commits are required.
+
 ## Validate The Installer
 
 Run a dry run:
@@ -289,7 +302,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## Notes
 
-- Git is optional. This project does not install Git globally. The installer does not run `git clone` by default; pass `-AllowGitClone` to opt into git fallback. If PowerShell git is blocked but Git Bash works, add `-UseGitBashForGit`; use `-SourcePath` or `-SourceZip` when `git clone` is fully blocked.
+- Git is optional. This project does not install Git globally. The installer does not run `git clone` by default; pass `-AllowGitClone` to opt into git fallback. If PowerShell git is blocked but Git Bash works, add `-UseGitBashForGit`; use `-SourcePath` or `-SourceZip` when the full `hermes-agent.git` clone is slow or blocked.
+- When using `-SourceZip` or `-SourcePath`, the main Hermes source is never cloned. `-CloneSourceSubmodules` only clones submodules declared in `.gitmodules`.
 - Git Bash is still recommended for Hermes terminal features. If it is installed in a standard location, the launcher detects it automatically.
 - In fallback git mode, the installer sets Git's `windows.appendAtomically=false` via process-local environment variables to avoid Windows lock-file issues without running `git config --global`.
 - Node is intentionally opt-in. Pass `-InstallNodeDeps` and `-NodeZip` when you need Node-based features.

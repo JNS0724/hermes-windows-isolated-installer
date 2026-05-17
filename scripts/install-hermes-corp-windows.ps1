@@ -18,6 +18,7 @@ It deliberately does not:
 It does:
 - prepare hermes-agent from a local source directory or source zip
 - optionally clone/update hermes-agent from GitHub only when -AllowGitClone is given
+- optionally clone submodules from a local source zip/path only when -CloneSourceSubmodules and -AllowGitClone are given
 - optionally run git operations through Git Bash when -UseGitBashForGit is given
 - create a local uv-managed Python 3.11 virtual environment
 - optionally use a local/managed Node runtime for Node-based dependencies
@@ -47,6 +48,8 @@ Manual source install:
   Git clone fallback is disabled unless -AllowGitClone is passed.
   If PowerShell git clone fails but manual Git Bash clone works, add:
   -AllowGitClone -UseGitBashForGit
+  To keep Hermes source from zip while cloning only source submodules, add:
+  -SourceZip C:\path\to\hermes-agent-v2026.5.7.zip -AllowGitClone -CloneSourceSubmodules
 
 Diagnostics:
   Installer logs are written to <root>\logs by default.
@@ -77,6 +80,7 @@ param(
     [string]$LogDir = "",
     [switch]$AllowGitClone,
     [switch]$UseGitBashForGit,
+    [switch]$CloneSourceSubmodules,
     [switch]$InstallNodeDeps,
     [switch]$ForceRecreateVenv,
     [switch]$SkipDependencyInstall,
@@ -193,6 +197,25 @@ function Assert-UnderRoot {
     $rootSlashLower = $rootWithSlash.ToLowerInvariant()
     if (($fullLower -ne $rootLower) -and (-not $fullLower.StartsWith($rootSlashLower))) {
         throw "$Purpose must stay under root '$root'. Got: $full"
+    }
+    return $full
+}
+
+function Assert-UnderDirectory {
+    param(
+        [string]$Path,
+        [string]$BaseDirectory,
+        [string]$Purpose
+    )
+
+    $full = Resolve-FullPath $Path
+    $base = Resolve-FullPath $BaseDirectory
+    $baseWithSlash = $base.TrimEnd('\') + '\'
+    $fullLower = $full.ToLowerInvariant()
+    $baseLower = $base.ToLowerInvariant()
+    $baseSlashLower = $baseWithSlash.ToLowerInvariant()
+    if (($fullLower -ne $baseLower) -and (-not $fullLower.StartsWith($baseSlashLower))) {
+        throw "$Purpose must stay under '$base'. Got: $full"
     }
     return $full
 }
@@ -1204,9 +1227,174 @@ function Install-SourceFromLocal {
     Write-Ok "Hermes source ready at $script:InstallDir"
 }
 
+function Read-Gitmodules {
+    param([string]$Path)
+
+    $modules = @()
+    $current = $null
+
+    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+        if ($line -match '^\s*\[submodule\s+"([^"]+)"\]\s*$') {
+            if ($current -and $current.Path -and $current.Url) {
+                $modules += [pscustomobject]$current
+            }
+            $current = @{
+                Name = $matches[1]
+                Path = ""
+                Url = ""
+                Branch = ""
+            }
+            continue
+        }
+
+        if (-not $current) {
+            continue
+        }
+
+        if ($line -match '^\s*(path|url|branch)\s*=\s*(.+?)\s*$') {
+            $key = $matches[1].ToLowerInvariant()
+            $value = $matches[2].Trim()
+            if ($key -eq "path") {
+                $current.Path = $value
+            } elseif ($key -eq "url") {
+                $current.Url = $value
+            } elseif ($key -eq "branch") {
+                $current.Branch = $value
+            }
+        }
+    }
+
+    if ($current -and $current.Path -and $current.Url) {
+        $modules += [pscustomobject]$current
+    }
+
+    return $modules
+}
+
+function Test-GitUrlIsRelative {
+    param([string]$Url)
+
+    if ($Url -match '^[A-Za-z][A-Za-z0-9+.-]*://') {
+        return $false
+    }
+    if ($Url -match '^[^@\s]+@[^:\s]+:.+') {
+        return $false
+    }
+    if ([System.IO.Path]::IsPathRooted($Url)) {
+        return $false
+    }
+    return $true
+}
+
+function ConvertTo-CloneTargetArg {
+    param([string]$Path)
+
+    if ($UseGitBashForGit) {
+        return ConvertTo-GitBashPath $Path
+    }
+    return $Path
+}
+
+function Clone-OrUpdateSourceSubmodule {
+    param(
+        [psobject]$Module
+    )
+
+    if (Test-GitUrlIsRelative $Module.Url) {
+        Write-Warn "Skipping relative submodule URL '$($Module.Url)' for '$($Module.Path)'. Use a full URL in .gitmodules for source-zip submodule cloning."
+        return
+    }
+
+    $moduleRelativePath = ($Module.Path -replace '/', '\')
+    $moduleDir = Assert-UnderDirectory (Join-Path $script:InstallDir $moduleRelativePath) $script:InstallDir "submodule path"
+    $moduleParent = Split-Path $moduleDir -Parent
+    if (-not (Test-Path -LiteralPath $moduleParent)) {
+        New-Item -ItemType Directory -Force -Path $moduleParent | Out-Null
+    }
+
+    $moduleGitDir = Join-Path $moduleDir ".git"
+    if (Test-Path -LiteralPath $moduleGitDir) {
+        Write-Info "Updating source submodule $($Module.Path)..."
+        Invoke-GitCommand -Arguments @("remote", "set-url", "origin", $Module.Url) -WorkingDirectory $moduleDir
+        Invoke-GitCommand -Arguments @("fetch", "--tags", "origin") -WorkingDirectory $moduleDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "git fetch failed for source submodule $($Module.Path)"
+        }
+        if ($Module.Branch) {
+            Invoke-GitCommand -Arguments @("checkout", $Module.Branch) -WorkingDirectory $moduleDir
+            if ($LASTEXITCODE -ne 0) {
+                throw "git checkout $($Module.Branch) failed for source submodule $($Module.Path)"
+            }
+            Invoke-GitCommand -Arguments @("pull", "--ff-only", "origin", $Module.Branch) -WorkingDirectory $moduleDir
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "git pull failed or was not needed for source submodule $($Module.Path)."
+            }
+        } else {
+            Invoke-GitCommand -Arguments @("pull", "--ff-only") -WorkingDirectory $moduleDir
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warn "git pull failed or no upstream was configured for source submodule $($Module.Path)."
+            }
+        }
+        Invoke-GitCommand -Arguments @("submodule", "update", "--init", "--recursive") -WorkingDirectory $moduleDir
+        return
+    }
+
+    $existingItems = @()
+    if (Test-Path -LiteralPath $moduleDir) {
+        $existingItems = @(Get-ChildItem -LiteralPath $moduleDir -Force -ErrorAction SilentlyContinue)
+    }
+    if ($existingItems.Count -gt 0) {
+        Write-Ok "Source submodule path already has files; leaving it unchanged: $($Module.Path)"
+        return
+    }
+
+    Write-Info "Cloning source submodule $($Module.Path) from $($Module.Url)..."
+    $cloneTarget = ConvertTo-CloneTargetArg $moduleDir
+    $cloneArgs = @("clone", "--recurse-submodules")
+    if ($Module.Branch) {
+        $cloneArgs += @("--branch", $Module.Branch)
+    }
+    $cloneArgs += @($Module.Url, $cloneTarget)
+    Invoke-GitCommand -Arguments $cloneArgs -WorkingDirectory $moduleParent
+    if ($LASTEXITCODE -ne 0) {
+        throw "git clone failed for source submodule $($Module.Path)"
+    }
+}
+
+function Sync-SourceSubmodulesIfRequested {
+    $gitmodulesPath = Join-Path $script:InstallDir ".gitmodules"
+    if (-not (Test-Path -LiteralPath $gitmodulesPath -PathType Leaf)) {
+        return
+    }
+
+    if (-not $CloneSourceSubmodules) {
+        Write-Warn ".gitmodules found in local source. Source submodule cloning is disabled; pass -AllowGitClone -CloneSourceSubmodules if those files are required."
+        return
+    }
+
+    if (-not $AllowGitClone) {
+        throw "-CloneSourceSubmodules requires -AllowGitClone."
+    }
+
+    Ensure-GitForClone
+    $modules = @(Read-Gitmodules -Path $gitmodulesPath)
+    if ($modules.Count -eq 0) {
+        Write-Warn ".gitmodules exists but no submodules with both path and url were found."
+        return
+    }
+
+    Write-Warn "Source submodules cloned from a local archive use .gitmodules URL/branch/default HEAD. Use a full git checkout if exact superproject-pinned submodule commits are required."
+    foreach ($module in $modules) {
+        Clone-OrUpdateSourceSubmodule -Module $module
+    }
+
+    Write-Ok "Source submodules ready"
+}
+
 function Update-Repository {
     if (Test-LocalSourceRequested) {
         Install-SourceFromLocal
+        Sync-SourceSubmodulesIfRequested
         return
     }
 
@@ -1717,6 +1905,9 @@ function Main {
     Initialize-Paths
     Start-InstallLog
     $localSourceMode = Test-LocalSourceRequested
+    if ($CloneSourceSubmodules -and (-not $AllowGitClone)) {
+        throw "-CloneSourceSubmodules requires -AllowGitClone because it may run git clone."
+    }
 
     Write-Host ""
     Write-Host "Hermes Agent native Windows isolated installer" -ForegroundColor Magenta
@@ -1729,6 +1920,7 @@ function Main {
         if ($SourceZip.Trim()) {
             Write-Host "SourceZip:  $($SourceZip.Trim())"
         }
+        Write-Host "Submodules: $(if ($CloneSourceSubmodules) { 'clone when .gitmodules exists' } else { 'disabled' })"
     } else {
         Write-Host "Source:     missing local source"
         Write-Host "Git clone:  $(if ($AllowGitClone) { 'enabled' } else { 'disabled' })"
@@ -1742,6 +1934,7 @@ function Main {
     Write-Host "Transcript: $script:TranscriptPath"
     Write-Host ""
     Write-LogLine -Level "INFO" -Message ("LocalSourceMode={0}" -f $localSourceMode)
+    Write-LogLine -Level "INFO" -Message ("CloneSourceSubmodules={0}" -f [bool]$CloneSourceSubmodules)
     if ($SourcePath.Trim()) {
         Write-LogLine -Level "INFO" -Message ("SourcePath={0}" -f (Resolve-FullPath $SourcePath.Trim()))
     }

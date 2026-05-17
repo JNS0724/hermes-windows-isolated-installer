@@ -79,6 +79,16 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
   -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
+如果完整 clone `hermes-agent.git` 很慢，可以继续让 Hermes 主源码走 zip，只在源码里存在 `.gitmodules` 且确实需要子模块文件时，单独 clone 子模块：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.ps1 `
+  -SourceZip C:\downloads\hermes-agent-v2026.5.7.zip `
+  -AllowGitClone `
+  -CloneSourceSubmodules `
+  -UseGitBashForGit
+```
+
 如果 PowerShell 提示脚本未进行数字签名、无法运行，可以改用 CMD 包装入口：
 
 ```cmd
@@ -143,6 +153,7 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | `-SourceZip` | 空 | 本地 Hermes Agent 源码 zip。安装器会解压到 `runtime\source-extract`，再把源码复制到 `app\hermes-agent`。 |
 | `-AllowGitClone` | 关闭 | 显式允许安装器使用 git clone 兜底。默认关闭，推荐手动下载源码 zip。 |
 | `-UseGitBashForGit` | 关闭 | 让兜底 git 操作通过 Git Bash 执行。当用户手动在 Git Bash 里 `git clone` 成功、但 PowerShell 里失败时使用。 |
+| `-CloneSourceSubmodules` | 关闭 | 在 `-SourcePath` 或 `-SourceZip` 模式下，clone/update `.gitmodules` 里声明的子模块。需要同时传 `-AllowGitClone`；适合主 Hermes 源码走 zip、小型子模块走 git 的场景。 |
 | `-RepoUrl` | `https://github.com/NousResearch/hermes-agent.git` | 兜底 git 仓库地址。只有传 `-AllowGitClone` 且未传 `-SourcePath` / `-SourceZip` 时才使用。 |
 | `-Branch` | `v2026.5.7` | 兜底 git 分支或 tag。`v2026.5.7` 对应 v0.13.0 附近的 Windows Native 版本。 |
 | `-PythonVersion` | `3.11` | 本地 uv 虚拟环境使用的 Python 版本。 |
@@ -231,6 +242,8 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 `
 
 该模式会通过 Git Bash 执行 `git clone`、`fetch`、`checkout`、`pull` 和 `submodule update`，不会写入全局 Git 配置。
 
+推荐的 zip 工作流里，`-SourceZip` 和 `-SourcePath` 始终优先于 clone Hermes 主仓库。只有源码里存在 `.gitmodules` 且确实需要这些子模块文件时，才额外加 `-CloneSourceSubmodules`。因为源码压缩包不保留主仓库 git index，空的子模块目录会按 `.gitmodules` 里的 URL 和 branch/default HEAD clone；如果必须精确使用主仓库锁定的子模块提交，仍然需要完整 git checkout。
+
 ## 验证安装器
 
 先做 dry run：
@@ -289,7 +302,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall-hermes-corp.ps1 -StopProces
 
 ## 说明
 
-- Git 是可选项。本项目不会全局安装 Git。默认不执行 `git clone`；只有传 `-AllowGitClone` 才会使用 git 兜底。PowerShell git 被拦截但 Git Bash 可用时，加 `-UseGitBashForGit`；`git clone` 完全被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
+- Git 是可选项。本项目不会全局安装 Git。默认不执行 `git clone`；只有传 `-AllowGitClone` 才会使用 git 兜底。PowerShell git 被拦截但 Git Bash 可用时，加 `-UseGitBashForGit`；完整 clone `hermes-agent.git` 很慢或被拦截时，使用 `-SourcePath` 或 `-SourceZip`。
+- 使用 `-SourceZip` 或 `-SourcePath` 时，Hermes 主源码不会被 clone。`-CloneSourceSubmodules` 只会 clone `.gitmodules` 里声明的子模块。
 - Git Bash 仍建议安装，用于 Hermes terminal 功能。安装在常见路径时，启动器会自动探测。
 - 在兜底 git 模式下，安装器会通过进程级环境变量设置 Git 的 `windows.appendAtomically=false`，用于规避 Windows lock 文件问题，但不会运行 `git config --global`。
 - Node 是可选项。只有需要 Node 相关功能时，才传 `-InstallNodeDeps` 和 `-NodeZip`。
