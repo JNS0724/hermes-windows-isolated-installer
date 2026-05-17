@@ -195,6 +195,8 @@ function Set-ProcessOnlyEnvironment {
     $env:UV_SYSTEM_CERTS = "true"
     $env:UV_NO_MODIFY_PATH = "1"
     $env:PIP_REQUIRE_VIRTUALENV = "true"
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
     $env:GIT_CONFIG_COUNT = "1"
     $env:GIT_CONFIG_KEY_0 = "windows.appendAtomically"
     $env:GIT_CONFIG_VALUE_0 = "false"
@@ -617,6 +619,8 @@ if (-not (Test-Path -LiteralPath `$HermesExe)) {
 `$env:UV_PYTHON_NO_REGISTRY = '1'
 `$env:UV_NO_MODIFY_PATH = '1'
 `$env:PIP_REQUIRE_VIRTUALENV = 'true'
+`$env:PYTHONUTF8 = '1'
+`$env:PYTHONIOENCODING = 'utf-8'
 "@
 
     if ($escapedGitBash) {
