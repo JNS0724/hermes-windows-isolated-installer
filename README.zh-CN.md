@@ -87,7 +87,11 @@ C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourceZip 
 C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
-如果完整 clone `hermes-agent.git` 很慢，仍然保持上面的 zip 安装方式。只有源码里存在 `.gitmodules` 且确实需要子模块文件时，才额外 clone 子模块：
+### 是否需要手动下载子模块
+
+通常不需要。先按最小命令用 Hermes 源码 zip 安装，安装完成后运行 `bin\hermes-corp.ps1 --version` 和 `bin\hermes-corp.ps1 doctor`。如果没有报缺少子模块相关文件，就不用处理子模块。
+
+如果完整 clone `hermes-agent.git` 很慢，仍然保持上面的 zip 安装方式。只有运行或诊断明确报缺少子模块文件，或者你确认源码里的 `.gitmodules` 对当前功能必需时，才让脚本补 clone 子模块：
 
 ```cmd
 C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd ^

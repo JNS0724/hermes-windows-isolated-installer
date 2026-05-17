@@ -87,7 +87,11 @@ If you already extracted the zip, pass the extracted source folder instead:
 C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd -SourcePath C:\downloads\hermes-agent-2026.5.7
 ```
 
-If cloning the full `hermes-agent.git` repository is slow, keep the zip workflow above. Only add source submodule cloning when the zip contains `.gitmodules` and those files are required:
+### Do I Need To Download Submodules?
+
+Usually no. Start with the minimal source-zip install, then run `bin\hermes-corp.ps1 --version` and `bin\hermes-corp.ps1 doctor`. If nothing reports missing submodule files, do not handle submodules.
+
+If cloning the full `hermes-agent.git` repository is slow, keep the zip workflow above. Only let the installer clone source submodules when runtime or diagnostics explicitly report missing submodule files, or when you know a `.gitmodules` entry is required for your workflow:
 
 ```cmd
 C:\path\to\hermes-windows-isolated-installer\install-hermes-corp.cmd ^
