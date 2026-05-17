@@ -480,6 +480,229 @@ function Set-PythonPackageMirrorEnvironment {
     }
 }
 
+function Get-NpmConfigEnv {
+    param([string]$Key)
+
+    $envName = "npm_config_" + ($Key -replace "-", "_")
+    $value = Get-ProcessEnv $envName
+    if ($value) {
+        return $value
+    }
+
+    $upperName = "NPM_CONFIG_" + (($Key -replace "-", "_").ToUpperInvariant())
+    return Get-ProcessEnv $upperName
+}
+
+function Set-NpmConfigEnv {
+    param(
+        [string]$Key,
+        [string]$Value
+    )
+
+    if (-not ($Value -and $Value.Trim())) {
+        return
+    }
+
+    $envName = "npm_config_" + ($Key -replace "-", "_")
+    Set-ProcessEnvIfValue -Name $envName -Value $Value
+}
+
+function Expand-NpmConfigValue {
+    param([string]$Value)
+
+    if (-not $Value) {
+        return ""
+    }
+
+    $expanded = [regex]::Replace($Value, '\$\{([^}?]+)(\?)?\}', {
+        param($Match)
+        $name = $Match.Groups[1].Value
+        $optional = $Match.Groups[2].Success
+        $envValue = [Environment]::GetEnvironmentVariable($name, "Process")
+        if ($null -eq $envValue) {
+            if ($optional) {
+                return ""
+            }
+            return $Match.Value
+        }
+        return $envValue
+    })
+
+    return [Environment]::ExpandEnvironmentVariables($expanded).Trim()
+}
+
+function Get-NpmConfigCandidatePaths {
+    param([switch]$IncludeProject)
+
+    $items = New-Object System.Collections.Generic.List[object]
+
+    $explicitGlobal = Get-NpmConfigEnv "globalconfig"
+    if ($explicitGlobal) {
+        $items.Add([pscustomobject]@{ Path = (Resolve-FullPath $explicitGlobal); Kind = "globalconfig env" })
+    } else {
+        if ($env:APPDATA) {
+            $items.Add([pscustomobject]@{ Path = (Join-Path $env:APPDATA "npm\etc\npmrc"); Kind = "globalconfig default" })
+        }
+        if ($script:NodeDir) {
+            $items.Add([pscustomobject]@{ Path = (Join-Path $script:NodeDir "etc\npmrc"); Kind = "managed node globalconfig" })
+        }
+    }
+
+    $explicitUser = Get-NpmConfigEnv "userconfig"
+    if ($explicitUser) {
+        $items.Add([pscustomobject]@{ Path = (Resolve-FullPath $explicitUser); Kind = "userconfig env" })
+    } elseif ($env:USERPROFILE) {
+        $items.Add([pscustomobject]@{ Path = (Join-Path $env:USERPROFILE ".npmrc"); Kind = "userconfig default" })
+    }
+
+    if ($IncludeProject -and $script:InstallDir) {
+        $items.Add([pscustomobject]@{ Path = (Join-Path $script:InstallDir ".npmrc"); Kind = "project config" })
+    }
+
+    $seen = @{}
+    foreach ($item in $items) {
+        if (-not $item.Path) {
+            continue
+        }
+        $full = Resolve-FullPath $item.Path
+        $key = $full.ToLowerInvariant()
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            [pscustomobject]@{ Path = $full; Kind = $item.Kind }
+        }
+    }
+}
+
+function Read-NpmConfigFile {
+    param([string]$Path)
+
+    $settings = @{}
+    $allowedKeys = @(
+        "registry",
+        "proxy",
+        "https-proxy",
+        "strict-ssl",
+        "cafile",
+        "userconfig",
+        "globalconfig"
+    )
+
+    foreach ($rawLine in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+        $raw = [string]$rawLine
+        $trimmed = $raw.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith("#") -or $trimmed.StartsWith(";")) {
+            continue
+        }
+
+        if ($trimmed -match '^([^=]+?)\s*=\s*(.*)$') {
+            $key = $matches[1].Trim().ToLowerInvariant()
+            $value = Expand-NpmConfigValue $matches[2].Trim().Trim('"').Trim("'")
+            if ($allowedKeys -contains $key) {
+                $settings[$key] = $value
+            }
+        }
+    }
+
+    return $settings
+}
+
+function Get-NpmConfigSettings {
+    param([switch]$IncludeProject)
+
+    $merged = @{}
+    $sources = @{}
+    $loadedPaths = @()
+
+    foreach ($item in Get-NpmConfigCandidatePaths -IncludeProject:$IncludeProject) {
+        if (-not (Test-Path -LiteralPath $item.Path -PathType Leaf)) {
+            continue
+        }
+
+        try {
+            $settings = Read-NpmConfigFile -Path $item.Path
+            if ($settings.Count -gt 0) {
+                $loadedPaths += $item
+            }
+            foreach ($key in $settings.Keys) {
+                if ($settings[$key]) {
+                    $merged[$key] = $settings[$key]
+                    $sources[$key] = "$($item.Kind): $($item.Path)"
+                }
+            }
+        } catch {
+            Write-Warn "Could not read npm config '$($item.Path)': $($_.Exception.Message)"
+        }
+    }
+
+    return @{
+        Settings = $merged
+        Sources = $sources
+        LoadedPaths = $loadedPaths
+    }
+}
+
+function Set-NodePackageMirrorEnvironment {
+    param([switch]$IncludeProject)
+
+    $npmConfig = Get-NpmConfigSettings -IncludeProject:$IncludeProject
+    $settings = $npmConfig.Settings
+    $sources = $npmConfig.Sources
+
+    foreach ($item in $npmConfig.LoadedPaths) {
+        Write-LogLine -Level "INFO" -Message "Loaded npm config ($($item.Kind)): $($item.Path)"
+    }
+
+    $registry = ""
+    $registrySource = ""
+    if ($NpmRegistry.Trim()) {
+        $registry = $NpmRegistry.Trim()
+        $registrySource = "-NpmRegistry"
+    } elseif ($IncludeProject -and $settings.ContainsKey("registry") -and ($sources["registry"] -like "project config:*")) {
+        $registry = $settings["registry"]
+        $registrySource = $sources["registry"]
+    } elseif (Get-NpmConfigEnv "registry") {
+        $registry = Get-NpmConfigEnv "registry"
+        $registrySource = "npm_config_registry"
+    } elseif ($settings.ContainsKey("registry")) {
+        $registry = $settings["registry"]
+        $registrySource = $sources["registry"]
+    }
+
+    if ($registry) {
+        Set-NpmConfigEnv -Key "registry" -Value $registry
+        Write-Ok ("npm registry: {0} ({1})" -f (Redact-ForLog $registry), $registrySource)
+    } elseif ($InstallNodeDeps) {
+        Write-Warn "No npm registry mirror was detected. npm may try public registry.npmjs.org."
+    }
+
+    foreach ($key in @("proxy", "https-proxy", "strict-ssl", "cafile", "userconfig", "globalconfig")) {
+        if ($IncludeProject -and $settings.ContainsKey($key) -and ($sources[$key] -like "project config:*")) {
+            Set-NpmConfigEnv -Key $key -Value $settings[$key]
+            continue
+        }
+        if (Get-NpmConfigEnv $key) {
+            continue
+        }
+        if ($settings.ContainsKey($key)) {
+            Set-NpmConfigEnv -Key $key -Value $settings[$key]
+        }
+    }
+
+    if (-not (Get-NpmConfigEnv "userconfig")) {
+        $userConfigItem = @(Get-NpmConfigCandidatePaths | Where-Object { $_.Kind -like "userconfig*" -and (Test-Path -LiteralPath $_.Path -PathType Leaf) } | Select-Object -First 1)
+        if ($userConfigItem.Count -gt 0) {
+            Set-NpmConfigEnv -Key "userconfig" -Value $userConfigItem[0].Path
+        }
+    }
+
+    if (-not (Get-NpmConfigEnv "globalconfig")) {
+        $globalConfigItem = @(Get-NpmConfigCandidatePaths | Where-Object { $_.Kind -like "*globalconfig*" -and (Test-Path -LiteralPath $_.Path -PathType Leaf) } | Select-Object -First 1)
+        if ($globalConfigItem.Count -gt 0) {
+            Set-NpmConfigEnv -Key "globalconfig" -Value $globalConfigItem[0].Path
+        }
+    }
+}
+
 function Start-InstallLog {
     if ($LogDir.Trim()) {
         $script:LogDir = Resolve-FullPath $LogDir.Trim()
@@ -525,6 +748,7 @@ function Write-EnvironmentDiagnostics {
         "UV_INSECURE_HOST", "PIP_TRUSTED_HOST", "SSL_CERT_FILE", "PIP_CERT", "PIP_CONFIG_FILE",
         "UV_PYTHON_INSTALL_MIRROR",
         "npm_config_registry", "npm_config_proxy", "npm_config_https_proxy",
+        "npm_config_strict_ssl", "npm_config_cafile", "npm_config_userconfig", "npm_config_globalconfig",
         "HERMES_HOME", "UV_CACHE_DIR", "TERMINAL_CWD"
     )) {
         $value = [Environment]::GetEnvironmentVariable($name, "Process")
@@ -617,10 +841,6 @@ function Set-ProcessOnlyEnvironment {
         $env:UV_PYTHON_INSTALL_MIRROR = $PythonInstallMirror.Trim()
     }
 
-    if ($NpmRegistry.Trim()) {
-        $env:npm_config_registry = $NpmRegistry.Trim()
-    }
-
     if ($HttpProxy.Trim()) {
         $proxy = $HttpProxy.Trim()
         $env:HTTP_PROXY = $proxy
@@ -642,6 +862,7 @@ function Set-ProcessOnlyEnvironment {
     }
 
     Set-PythonPackageMirrorEnvironment
+    Set-NodePackageMirrorEnvironment
 
     $pathParts = New-Object System.Collections.Generic.List[string]
     $pathParts.Add((Join-Path $script:InstallDir "venv\Scripts"))
@@ -1087,6 +1308,7 @@ function Install-NodeDependencies {
         return
     }
 
+    Set-NodePackageMirrorEnvironment -IncludeProject
     Ensure-Node
 
     if (-not (Test-Path -LiteralPath $script:NpmCmd)) {

@@ -124,6 +124,8 @@ $sandboxRoot = Join-Path $repoRoot ".sandbox\$SandboxName"
 $sourceRepo = Join-Path $sandboxRoot "source\hermes-agent-fake"
 $sourceZip = Join-Path $sandboxRoot "source\hermes-agent-fake.zip"
 $pipConfigFile = Join-Path $sandboxRoot "pip.ini"
+$npmConfigFile = Join-Path $sandboxRoot ".npmrc"
+$npmCaFile = Join-Path $sandboxRoot "corp-npm-ca.pem"
 $fakeUvEnvLog = Join-Path $sandboxRoot "fake-uv-env.log"
 $installRoot = Join-Path $sandboxRoot "target"
 $zipInstallRoot = Join-Path $sandboxRoot "target-zip"
@@ -155,6 +157,13 @@ $originalUvInsecureHost = $env:UV_INSECURE_HOST
 $originalPipTrustedHost = $env:PIP_TRUSTED_HOST
 $originalUvFindLinks = $env:UV_FIND_LINKS
 $originalPipFindLinks = $env:PIP_FIND_LINKS
+$originalNpmUserConfig = $env:npm_config_userconfig
+$originalNpmGlobalConfig = $env:npm_config_globalconfig
+$originalNpmRegistry = $env:npm_config_registry
+$originalNpmProxy = $env:npm_config_proxy
+$originalNpmHttpsProxy = $env:npm_config_https_proxy
+$originalNpmStrictSsl = $env:npm_config_strict_ssl
+$originalNpmCaFile = $env:npm_config_cafile
 
 try {
     $env:GIT_CONFIG_COUNT = "1"
@@ -172,6 +181,13 @@ try {
     $env:PIP_TRUSTED_HOST = $null
     $env:UV_FIND_LINKS = $null
     $env:PIP_FIND_LINKS = $null
+    $env:npm_config_userconfig = $npmConfigFile
+    $env:npm_config_globalconfig = $null
+    $env:npm_config_registry = $null
+    $env:npm_config_proxy = $null
+    $env:npm_config_https_proxy = $null
+    $env:npm_config_strict_ssl = $null
+    $env:npm_config_cafile = $null
 
     Write-Step "Resetting sandbox: $sandboxRoot"
     if (Test-Path -LiteralPath $sandboxRoot) {
@@ -193,6 +209,12 @@ if not "%FAKE_UV_LOG%"=="" (
   echo PIP_EXTRA_INDEX_URL=%PIP_EXTRA_INDEX_URL%>>"%FAKE_UV_LOG%"
   echo UV_INSECURE_HOST=%UV_INSECURE_HOST%>>"%FAKE_UV_LOG%"
   echo PIP_TRUSTED_HOST=%PIP_TRUSTED_HOST%>>"%FAKE_UV_LOG%"
+  echo npm_config_registry=%npm_config_registry%>>"%FAKE_UV_LOG%"
+  echo npm_config_proxy=%npm_config_proxy%>>"%FAKE_UV_LOG%"
+  echo npm_config_https_proxy=%npm_config_https_proxy%>>"%FAKE_UV_LOG%"
+  echo npm_config_strict_ssl=%npm_config_strict_ssl%>>"%FAKE_UV_LOG%"
+  echo npm_config_cafile=%npm_config_cafile%>>"%FAKE_UV_LOG%"
+  echo npm_config_userconfig=%npm_config_userconfig%>>"%FAKE_UV_LOG%"
 )
 if "%~1"=="--version" (
   echo uv 0.0.0-sandbox
@@ -222,6 +244,16 @@ trusted-host =
     pypi.corp
     pypi-extra.corp
 '@
+
+    Write-Step "Creating fake local npm config"
+    Write-TextNoBom -Path $npmCaFile -Content "fake npm ca`r`n"
+    Write-TextNoBom -Path $npmConfigFile -Content @"
+registry=https://npm.corp/repository/npm/
+proxy=http://proxy.corp.local:8080
+https-proxy=http://proxy.corp.local:8080
+strict-ssl=false
+cafile=$npmCaFile
+"@
 
     Write-Step "Creating local fake hermes-agent source tree"
     Write-TextNoBom -Path (Join-Path $sourceRepo "README.md") -Content "# fake hermes-agent`r`n"
@@ -273,6 +305,12 @@ version = "0.0.0"
     Assert-True ($fakeUvEnvText.Contains("PIP_EXTRA_INDEX_URL=https://pypi-extra.corp/simple")) "pip should inherit pip extra-index-url"
     Assert-True ($fakeUvEnvText.Contains("UV_INSECURE_HOST=pypi.corp pypi-extra.corp")) "uv should inherit pip trusted-host"
     Assert-True ($fakeUvEnvText.Contains("PIP_TRUSTED_HOST=pypi.corp pypi-extra.corp")) "pip should inherit pip trusted-host"
+    Assert-True ($fakeUvEnvText.Contains("npm_config_registry=https://npm.corp/repository/npm/")) "npm should inherit local registry"
+    Assert-True ($fakeUvEnvText.Contains("npm_config_proxy=http://proxy.corp.local:8080")) "npm should inherit local proxy"
+    Assert-True ($fakeUvEnvText.Contains("npm_config_https_proxy=http://proxy.corp.local:8080")) "npm should inherit local https-proxy"
+    Assert-True ($fakeUvEnvText.Contains("npm_config_strict_ssl=false")) "npm should inherit local strict-ssl"
+    Assert-True ($fakeUvEnvText.Contains("npm_config_cafile=$npmCaFile")) "npm should inherit local cafile"
+    Assert-True ($fakeUvEnvText.Contains("npm_config_userconfig=$npmConfigFile")) "npm should preserve local userconfig path"
 
     $partialArchives = @(Get-ChildItem -LiteralPath (Join-Path $installRoot "app") -Directory -Filter "hermes-agent.partial-*" -ErrorAction SilentlyContinue)
     Assert-True ($partialArchives.Count -eq 1) "Expected stale partial source directory to be moved aside once"
@@ -346,4 +384,11 @@ version = "0.0.0"
     $env:PIP_TRUSTED_HOST = $originalPipTrustedHost
     $env:UV_FIND_LINKS = $originalUvFindLinks
     $env:PIP_FIND_LINKS = $originalPipFindLinks
+    $env:npm_config_userconfig = $originalNpmUserConfig
+    $env:npm_config_globalconfig = $originalNpmGlobalConfig
+    $env:npm_config_registry = $originalNpmRegistry
+    $env:npm_config_proxy = $originalNpmProxy
+    $env:npm_config_https_proxy = $originalNpmHttpsProxy
+    $env:npm_config_strict_ssl = $originalNpmStrictSsl
+    $env:npm_config_cafile = $originalNpmCaFile
 }

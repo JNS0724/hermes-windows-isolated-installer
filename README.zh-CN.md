@@ -124,6 +124,8 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
 
 默认不传 `-InstallNodeDeps` 时，脚本会跳过 Node 依赖，也不会使用系统 Node。
 
+如果本机已经配置了 npm 镜像，例如 `NPM_CONFIG_USERCONFIG`、`%USERPROFILE%\.npmrc`、`%APPDATA%\npm\etc\npmrc`，可以不传 `-NpmRegistry`。安装器会读取 `.npmrc` 里的 `registry`、`proxy`、`https-proxy`、`strict-ssl`、`cafile`，并设置为当前进程的 `npm_config_*` 变量。`app\hermes-agent\.npmrc` 会在源码准备好后、安装 Node 依赖前再次读取。配置只在安装器进程内生效，不写入全局 npm 配置。
+
 ## 参数说明
 
 主入口：
@@ -145,7 +147,7 @@ powershell -ExecutionPolicy Bypass -File .\install-hermes-corp.ps1 [options]
 | `-PythonVersion` | `3.11` | 本地 uv 虚拟环境使用的 Python 版本。 |
 | `-NodeMajorVersion` | `22` | 本地托管 Node 目录名，仅在 `-InstallNodeDeps` 时使用。 |
 | `-PypiIndexUrl` | 空 | uv 和 pip 使用的 PyPI/simple 镜像地址。留空时会尝试读取本机 pip 配置。 |
-| `-NpmRegistry` | 空 | npm registry 地址。 |
+| `-NpmRegistry` | 空 | npm registry 地址。留空时会尝试读取本机 `.npmrc`。 |
 | `-PythonInstallMirror` | 空 | uv Python 安装镜像地址。 |
 | `-HttpProxy` | 空 | 安装阶段供 git、uv、pip、npm 使用的进程级 HTTP 代理。 |
 | `-HttpsProxy` | 空 | 安装阶段供 git、uv、pip、npm 使用的进程级 HTTPS 代理。 |

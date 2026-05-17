@@ -124,6 +124,8 @@ powershell -ExecutionPolicy Bypass -File C:\path\to\hermes-windows-isolated-inst
 
 Without `-InstallNodeDeps`, the installer skips Node dependencies and does not use system Node.
 
+If the machine already has an npm mirror configured through `NPM_CONFIG_USERCONFIG`, `%USERPROFILE%\.npmrc`, or `%APPDATA%\npm\etc\npmrc`, you can omit `-NpmRegistry`. The installer reads `registry`, `proxy`, `https-proxy`, `strict-ssl`, and `cafile` from `.npmrc` and maps them to process-local `npm_config_*` variables. It reads `app\hermes-agent\.npmrc` again after source preparation and before optional Node dependency installation. The installer does not write global npm config.
+
 ## Parameters
 
 Main wrapper:
@@ -145,7 +147,7 @@ Options are forwarded to `scripts\install-hermes-corp-windows.ps1`.
 | `-PythonVersion` | `3.11` | Python version for the local uv-managed venv. |
 | `-NodeMajorVersion` | `22` | Local managed Node folder name, used only with `-InstallNodeDeps`. |
 | `-PypiIndexUrl` | Empty | Internal PyPI/simple index URL for uv and pip. If empty, the installer tries to read local pip config. |
-| `-NpmRegistry` | Empty | Internal npm registry URL. |
+| `-NpmRegistry` | Empty | Internal npm registry URL. If empty, the installer tries to read local `.npmrc`. |
 | `-PythonInstallMirror` | Empty | uv Python install mirror. |
 | `-HttpProxy` | Empty | Process-local HTTP proxy used by git, uv, pip and npm during install. |
 | `-HttpsProxy` | Empty | Process-local HTTPS proxy used by git, uv, pip and npm during install. |
